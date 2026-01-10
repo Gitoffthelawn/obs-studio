@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 Hugh Bailey <obs.jim@gmail.com>
+ * Copyright (c) 2023 Lain Bailey <lain@obsproject.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -27,6 +27,7 @@
 #include <glob.h>
 #include <time.h>
 #include <signal.h>
+#include <uuid/uuid.h>
 
 #include "obsconfig.h"
 
@@ -34,16 +35,21 @@
 #include <sys/times.h>
 #include <sys/wait.h>
 #include <libgen.h>
-#ifdef __FreeBSD__
+#if defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/user.h>
 #include <unistd.h>
+#if defined(__FreeBSD__)
 #include <libprocstat.h>
+#endif
 #else
 #include <sys/resource.h>
+#endif
+#if !defined(__OpenBSD__)
+#include <sys/sysinfo.h>
 #endif
 #include <spawn.h>
 #endif
@@ -62,20 +68,26 @@ void *os_dlopen(const char *path)
 
 	dstr_init_copy(&dylib_name, path);
 #ifdef __APPLE__
-	if (!dstr_find(&dylib_name, ".so") && !dstr_find(&dylib_name, ".dylib"))
+	if (!dstr_find(&dylib_name, ".framework") && !dstr_find(&dylib_name, ".plugin") &&
+	    !dstr_find(&dylib_name, ".dylib") && !dstr_find(&dylib_name, ".so"))
 #else
 	if (!dstr_find(&dylib_name, ".so"))
 #endif
 		dstr_cat(&dylib_name, ".so");
 
 #ifdef __APPLE__
-	void *res = dlopen(dylib_name.array, RTLD_LAZY | RTLD_FIRST);
+	int dlopen_flags = RTLD_NOW | RTLD_FIRST;
+	if (dstr_find(&dylib_name, "Python")) {
+		dlopen_flags = dlopen_flags | RTLD_GLOBAL;
+	} else {
+		dlopen_flags = dlopen_flags | RTLD_LOCAL;
+	}
+	void *res = dlopen(dylib_name.array, dlopen_flags);
 #else
-	void *res = dlopen(dylib_name.array, RTLD_LAZY);
+	void *res = dlopen(dylib_name.array, RTLD_NOW);
 #endif
 	if (!res)
-		blog(LOG_ERROR, "os_dlopen(%s->%s): %s\n", path,
-		     dylib_name.array, dlerror());
+		blog(LOG_ERROR, "os_dlopen(%s->%s): %s\n", path, dylib_name.array, dlerror());
 
 	dstr_free(&dylib_name);
 	return res;
@@ -90,6 +102,20 @@ void os_dlclose(void *module)
 {
 	if (module)
 		dlclose(module);
+}
+
+void get_plugin_info(const char *path, bool *is_obs_plugin)
+{
+	*is_obs_plugin = true;
+	UNUSED_PARAMETER(path);
+}
+
+bool os_is_obs_plugin(const char *path)
+{
+	UNUSED_PARAMETER(path);
+
+	/* not necessary on this platform */
+	return true;
 }
 
 #if !defined(__APPLE__)
@@ -121,13 +147,12 @@ double os_cpu_usage_info_query(os_cpu_usage_info_t *info)
 		return 0.0;
 
 	cur_cpu_time = times(&time_sample);
-	if (cur_cpu_time <= info->last_cpu_time ||
-	    time_sample.tms_stime < info->last_sys_time ||
+	if (cur_cpu_time <= info->last_cpu_time || time_sample.tms_stime < info->last_sys_time ||
 	    time_sample.tms_utime < info->last_user_time)
 		return 0.0;
 
-	percent = (double)(time_sample.tms_stime - info->last_sys_time +
-			   (time_sample.tms_utime - info->last_user_time));
+	percent =
+		(double)(time_sample.tms_stime - info->last_sys_time + (time_sample.tms_utime - info->last_user_time));
 	percent /= (double)(cur_cpu_time - info->last_cpu_time);
 	percent /= (double)info->core_count;
 
@@ -168,6 +193,23 @@ bool os_sleepto_ns(uint64_t time_target)
 	return true;
 }
 
+bool os_sleepto_ns_fast(uint64_t time_target)
+{
+	uint64_t current = os_gettime_ns();
+	if (time_target < current)
+		return false;
+
+	do {
+		uint64_t remain_us = (time_target - current + 999) / 1000;
+		useconds_t us = remain_us >= 1000000 ? 999999 : remain_us;
+		usleep(us);
+
+		current = os_gettime_ns();
+	} while (time_target > current);
+
+	return true;
+}
+
 void os_sleep_ms(uint32_t duration)
 {
 	usleep(duration * 1000);
@@ -182,11 +224,9 @@ uint64_t os_gettime_ns(void)
 	return ((uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec);
 }
 
-/* should return $HOME/.[name], or when using XDG,
- * should return $HOME/.config/[name] as default */
+/* should return $HOME/.config/[name] as default */
 int os_get_config_path(char *dst, size_t size, const char *name)
 {
-#ifdef USE_XDG
 	char *xdg_ptr = getenv("XDG_CONFIG_HOME");
 
 	// If XDG_CONFIG_HOME is unset,
@@ -199,8 +239,7 @@ int os_get_config_path(char *dst, size_t size, const char *name)
 		if (!name || !*name) {
 			return snprintf(dst, size, "%s/.config", home_ptr);
 		} else {
-			return snprintf(dst, size, "%s/.config/%s", home_ptr,
-					name);
+			return snprintf(dst, size, "%s/.config/%s", home_ptr, name);
 		}
 	} else {
 		if (!name || !*name)
@@ -208,23 +247,11 @@ int os_get_config_path(char *dst, size_t size, const char *name)
 		else
 			return snprintf(dst, size, "%s/%s", xdg_ptr, name);
 	}
-#else
-	char *path_ptr = getenv("HOME");
-	if (path_ptr == NULL)
-		bcrash("Could not get $HOME\n");
-
-	if (!name || !*name)
-		return snprintf(dst, size, "%s", path_ptr);
-	else
-		return snprintf(dst, size, "%s/.%s", path_ptr, name);
-#endif
 }
 
-/* should return $HOME/.[name], or when using XDG,
- * should return $HOME/.config/[name] as default */
+/* should return $HOME/.config/[name] as default */
 char *os_get_config_path_ptr(const char *name)
 {
-#ifdef USE_XDG
 	struct dstr path;
 	char *xdg_ptr = getenv("XDG_CONFIG_HOME");
 
@@ -244,17 +271,6 @@ char *os_get_config_path_ptr(const char *name)
 		dstr_cat(&path, name);
 	}
 	return path.array;
-#else
-	char *path_ptr = getenv("HOME");
-	if (path_ptr == NULL)
-		bcrash("Could not get $HOME\n");
-
-	struct dstr path;
-	dstr_init_copy(&path, path_ptr);
-	dstr_cat(&path, "/.");
-	dstr_cat(&path, name);
-	return path.array;
-#endif
 }
 
 int os_get_program_data_path(char *dst, size_t size, const char *name)
@@ -264,18 +280,89 @@ int os_get_program_data_path(char *dst, size_t size, const char *name)
 
 char *os_get_program_data_path_ptr(const char *name)
 {
-	size_t len =
-		snprintf(NULL, 0, "/usr/local/share/%s", !!name ? name : "");
+	size_t len = snprintf(NULL, 0, "/usr/local/share/%s", !!name ? name : "");
 	char *str = bmalloc(len + 1);
 	snprintf(str, len + 1, "/usr/local/share/%s", !!name ? name : "");
 	str[len] = 0;
 	return str;
 }
 
+#if defined(__OpenBSD__)
+// a bit modified version of https://stackoverflow.com/a/31495527
+ssize_t os_openbsd_get_executable_path(char *epath)
+{
+	int mib[4];
+	char **argv;
+	size_t len;
+	const char *comm;
+	int ok = 0;
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_PROC_ARGS;
+	mib[2] = getpid();
+	mib[3] = KERN_PROC_ARGV;
+
+	if (sysctl(mib, 4, NULL, &len, NULL, 0) < 0)
+		abort();
+
+	if (!(argv = malloc(len)))
+		abort();
+
+	if (sysctl(mib, 4, argv, &len, NULL, 0) < 0)
+		abort();
+
+	comm = argv[0];
+
+	if (*comm == '/' || *comm == '.') {
+		if (realpath(comm, epath))
+			ok = 1;
+	} else {
+		char *sp;
+		char *xpath = strdup(getenv("PATH"));
+		char *path = strtok_r(xpath, ":", &sp);
+		struct stat st;
+
+		if (!xpath)
+			abort();
+
+		while (path) {
+			snprintf(epath, PATH_MAX, "%s/%s", path, comm);
+
+			if (!stat(epath, &st) && (st.st_mode & S_IXUSR)) {
+				ok = 1;
+				break;
+			}
+			path = strtok_r(NULL, ":", &sp);
+		}
+
+		free(xpath);
+	}
+
+	free(argv);
+	return ok ? (ssize_t)strlen(epath) : -1;
+}
+#endif
+
 char *os_get_executable_path_ptr(const char *name)
 {
 	char exe[PATH_MAX];
-	ssize_t count = readlink("/proc/self/exe", exe, PATH_MAX);
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+	int sysctlname[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+	size_t pathlen = PATH_MAX;
+	ssize_t count;
+	if (sysctl(sysctlname, nitems(sysctlname), exe, &pathlen, NULL, 0) == -1) {
+		blog(LOG_ERROR, "sysctl(KERN_PROC_PATHNAME) failed, errno %d", errno);
+		return NULL;
+	}
+	count = pathlen;
+#elif defined(__OpenBSD__)
+	ssize_t count = os_openbsd_get_executable_path(exe);
+#else
+	ssize_t count = readlink("/proc/self/exe", exe, PATH_MAX - 1);
+	if (count >= 0) {
+		exe[count] = '\0';
+	}
+#endif
 	const char *path_out = NULL;
 	struct dstr path;
 
@@ -296,6 +383,11 @@ char *os_get_executable_path_ptr(const char *name)
 	}
 
 	return path.array;
+}
+
+bool os_get_emulation_status(void)
+{
+	return false;
 }
 
 #endif
@@ -376,7 +468,10 @@ struct os_dirent *os_readdir(os_dir_t *dir)
 	if (!dir->cur_dirent)
 		return NULL;
 
-	strncpy(dir->out.d_name, dir->cur_dirent->d_name, 255);
+	const size_t length = strlen(dir->cur_dirent->d_name);
+	if (sizeof(dir->out.d_name) <= length)
+		return NULL;
+	memcpy(dir->out.d_name, dir->cur_dirent->d_name, length + 1);
 
 	dstr_copy(&file_path, dir->path);
 	dstr_cat(&file_path, "/");
@@ -397,6 +492,7 @@ void os_closedir(os_dir_t *dir)
 	}
 }
 
+#ifndef __APPLE__
 int64_t os_get_free_space(const char *path)
 {
 	struct statvfs info;
@@ -407,6 +503,7 @@ int64_t os_get_free_space(const char *path)
 
 	return ret;
 }
+#endif
 
 struct posix_glob_info {
 	struct os_glob_info base;
@@ -542,18 +639,23 @@ int os_chdir(const char *path)
 
 #if !defined(__APPLE__)
 
-#if HAVE_DBUS
+#if defined(GIO_FOUND)
 struct dbus_sleep_info;
+struct portal_inhibit_info;
 
 extern struct dbus_sleep_info *dbus_sleep_info_create(void);
-extern void dbus_inhibit_sleep(struct dbus_sleep_info *dbus, const char *sleep,
-			       bool active);
+extern void dbus_inhibit_sleep(struct dbus_sleep_info *dbus, const char *sleep, bool active);
 extern void dbus_sleep_info_destroy(struct dbus_sleep_info *dbus);
+
+extern struct portal_inhibit_info *portal_inhibit_info_create(void);
+extern void portal_inhibit(struct portal_inhibit_info *portal, const char *reason, bool active);
+extern void portal_inhibit_info_destroy(struct portal_inhibit_info *portal);
 #endif
 
 struct os_inhibit_info {
-#if HAVE_DBUS
+#if defined(GIO_FOUND)
 	struct dbus_sleep_info *dbus;
+	struct portal_inhibit_info *portal;
 #endif
 	pthread_t screensaver_thread;
 	os_event_t *stop_event;
@@ -567,10 +669,23 @@ os_inhibit_t *os_inhibit_sleep_create(const char *reason)
 	struct os_inhibit_info *info = bzalloc(sizeof(*info));
 	sigset_t set;
 
-#if HAVE_DBUS
-	info->dbus = dbus_sleep_info_create();
-#endif
+#if defined(GIO_FOUND)
+	info->portal = portal_inhibit_info_create();
+	if (!info->portal) {
+		/* In a Flatpak, only the portal can be used for inhibition. */
+		if (access("/.flatpak-info", F_OK) == 0) {
+			bfree(info);
+			return NULL;
+		}
 
+		info->dbus = dbus_sleep_info_create();
+	}
+
+	if (info->portal || info->dbus) {
+		info->reason = bstrdup(reason);
+		return info;
+	}
+#endif
 	os_event_init(&info->stop_event, OS_EVENT_TYPE_AUTO);
 	posix_spawnattr_init(&info->attr);
 
@@ -578,8 +693,7 @@ os_inhibit_t *os_inhibit_sleep_create(const char *reason)
 	posix_spawnattr_setsigmask(&info->attr, &set);
 	sigaddset(&set, SIGPIPE);
 	posix_spawnattr_setsigdefault(&info->attr, &set);
-	posix_spawnattr_setflags(&info->attr, POSIX_SPAWN_SETSIGDEF |
-						      POSIX_SPAWN_SETSIGMASK);
+	posix_spawnattr_setflags(&info->attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
 
 	info->reason = bstrdup(reason);
 	return info;
@@ -592,8 +706,7 @@ static void reset_screensaver(os_inhibit_t *info)
 	char *argv[3] = {(char *)"xdg-screensaver", (char *)"reset", NULL};
 	pid_t pid;
 
-	int err = posix_spawnp(&pid, "xdg-screensaver", NULL, &info->attr, argv,
-			       environ);
+	int err = posix_spawnp(&pid, "xdg-screensaver", NULL, &info->attr, argv, environ);
 	if (err == 0) {
 		int status;
 		while (waitpid(pid, &status, 0) == -1)
@@ -622,17 +735,22 @@ bool os_inhibit_sleep_set_active(os_inhibit_t *info, bool active)
 	if (info->active == active)
 		return false;
 
-#if HAVE_DBUS
+#if defined(GIO_FOUND)
+	if (info->portal)
+		portal_inhibit(info->portal, info->reason, active);
 	if (info->dbus)
 		dbus_inhibit_sleep(info->dbus, info->reason, active);
+	if (info->portal || info->dbus) {
+		info->active = active;
+		return true;
+	}
 #endif
 
 	if (!info->stop_event)
 		return true;
 
 	if (active) {
-		ret = pthread_create(&info->screensaver_thread, NULL,
-				     &screensaver_thread, info);
+		ret = pthread_create(&info->screensaver_thread, NULL, &screensaver_thread, info);
 		if (ret < 0) {
 			blog(LOG_ERROR, "Failed to create screensaver "
 					"inhibitor thread");
@@ -651,11 +769,20 @@ void os_inhibit_sleep_destroy(os_inhibit_t *info)
 {
 	if (info) {
 		os_inhibit_sleep_set_active(info, false);
-#if HAVE_DBUS
-		dbus_sleep_info_destroy(info->dbus);
-#endif
+#if defined(GIO_FOUND)
+		if (info->portal) {
+			portal_inhibit_info_destroy(info->portal);
+		} else if (info->dbus) {
+			dbus_sleep_info_destroy(info->dbus);
+		} else {
+			os_event_destroy(info->stop_event);
+			posix_spawnattr_destroy(&info->attr);
+		}
+#else
 		os_event_destroy(info->stop_event);
 		posix_spawnattr_destroy(&info->attr);
+#endif
+
 		bfree(info->reason);
 		bfree(info);
 	}
@@ -664,6 +791,11 @@ void os_inhibit_sleep_destroy(os_inhibit_t *info)
 #endif
 
 void os_breakpoint()
+{
+	raise(SIGTRAP);
+}
+
+void os_oom()
 {
 	raise(SIGTRAP);
 }
@@ -718,8 +850,7 @@ static void os_get_cores_internal(void)
 				continue;
 
 			if (dstr_is_empty(&proc_phys_ids) ||
-			    (!dstr_is_empty(&proc_phys_ids) &&
-			     !dstr_find(&proc_phys_ids, proc_phys_id.array))) {
+			    (!dstr_is_empty(&proc_phys_ids) && !dstr_find(&proc_phys_ids, proc_phys_id.array))) {
 				dstr_cat_dstr(&proc_phys_ids, &proc_phys_id);
 				dstr_cat(&proc_phys_ids, " ");
 				core_count += atoi(start);
@@ -818,8 +949,7 @@ uint64_t os_get_sys_free_size(void)
 {
 	uint64_t mem_free = 0;
 	size_t length = sizeof(mem_free);
-	if (sysctlbyname("vm.stats.vm.v_free_count", &mem_free, &length, NULL,
-			 0) < 0)
+	if (sysctlbyname("vm.stats.vm.v_free_count", &mem_free, &length, NULL, 0) < 0)
 		return 0;
 	return mem_free;
 }
@@ -828,8 +958,7 @@ static inline bool os_get_proc_memory_usage_internal(struct kinfo_proc *kinfo)
 {
 	int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
 	size_t length = sizeof(*kinfo);
-	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), kinfo, &length, NULL, 0) <
-	    0)
+	if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), kinfo, &length, NULL, 0) < 0)
 		return false;
 	return true;
 }
@@ -840,8 +969,7 @@ bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 	if (!os_get_proc_memory_usage_internal(&kinfo))
 		return false;
 
-	usage->resident_size =
-		(uint64_t)kinfo.ki_rssize * sysconf(_SC_PAGESIZE);
+	usage->resident_size = (uint64_t)kinfo.ki_rssize * sysconf(_SC_PAGESIZE);
 	usage->virtual_size = (uint64_t)kinfo.ki_size;
 	return true;
 }
@@ -862,11 +990,6 @@ uint64_t os_get_proc_virtual_size(void)
 	return (uint64_t)kinfo.ki_size;
 }
 #else
-uint64_t os_get_sys_free_size(void)
-{
-	return 0;
-}
-
 typedef struct {
 	unsigned long virtual_size;
 	unsigned long resident_size;
@@ -885,9 +1008,8 @@ static inline bool os_get_proc_memory_usage_internal(statm_t *statm)
 	if (!f)
 		return false;
 
-	if (fscanf(f, "%lu %lu %lu %lu %lu %lu %lu", &statm->virtual_size,
-		   &statm->resident_size, &statm->share_pages, &statm->text,
-		   &statm->library, &statm->data, &statm->dirty_pages) != 7) {
+	if (fscanf(f, "%lu %lu %lu %lu %lu %lu %lu", &statm->virtual_size, &statm->resident_size, &statm->share_pages,
+		   &statm->text, &statm->library, &statm->data, &statm->dirty_pages) != 7) {
 		fclose(f);
 		return false;
 	}
@@ -902,7 +1024,7 @@ bool os_get_proc_memory_usage(os_proc_memory_usage_t *usage)
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return false;
 
-	usage->resident_size = statm.resident_size;
+	usage->resident_size = (uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
 	usage->virtual_size = statm.virtual_size;
 	return true;
 }
@@ -912,7 +1034,7 @@ uint64_t os_get_proc_resident_size(void)
 	statm_t statm = {};
 	if (!os_get_proc_memory_usage_internal(&statm))
 		return 0;
-	return (uint64_t)statm.resident_size;
+	return (uint64_t)statm.resident_size * sysconf(_SC_PAGESIZE);
 }
 
 uint64_t os_get_proc_virtual_size(void)
@@ -922,9 +1044,49 @@ uint64_t os_get_proc_virtual_size(void)
 		return 0;
 	return (uint64_t)statm.virtual_size;
 }
-#endif
+
+uint64_t os_get_sys_free_size(void)
+{
+	uint64_t free_memory = 0;
+#ifndef __OpenBSD__
+	struct sysinfo info;
+	if (sysinfo(&info) < 0)
+		return 0;
+
+	free_memory = ((uint64_t)info.freeram + (uint64_t)info.bufferram) * info.mem_unit;
 #endif
 
+	return free_memory;
+}
+#endif
+
+static uint64_t total_memory = 0;
+static bool total_memory_initialized = false;
+
+static void os_get_sys_total_size_internal()
+{
+	total_memory_initialized = true;
+
+#ifndef __OpenBSD__
+	struct sysinfo info;
+	if (sysinfo(&info) < 0)
+		return;
+
+	total_memory = (uint64_t)info.totalram * info.mem_unit;
+#endif
+}
+
+uint64_t os_get_sys_total_size(void)
+{
+	if (!total_memory_initialized)
+		os_get_sys_total_size_internal();
+
+	return total_memory;
+}
+
+#endif
+
+#ifndef __APPLE__
 uint64_t os_get_free_disk_space(const char *dir)
 {
 	struct statvfs info;
@@ -932,4 +1094,15 @@ uint64_t os_get_free_disk_space(const char *dir)
 		return 0;
 
 	return (uint64_t)info.f_frsize * (uint64_t)info.f_bavail;
+}
+#endif
+
+char *os_generate_uuid(void)
+{
+	uuid_t uuid;
+	// 36 char UUID + NULL
+	char *out = bmalloc(37);
+	uuid_generate(uuid);
+	uuid_unparse_lower(uuid, out);
+	return out;
 }

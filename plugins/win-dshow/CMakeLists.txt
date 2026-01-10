@@ -1,63 +1,57 @@
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libdshowcapture/dshowcapture.hpp")
-	message(STATUS "libdshowcapture submodule not found!  Please fetch submodules.  win-dshow plugin disabled.")
-	return()
+cmake_minimum_required(VERSION 3.28...3.30)
+
+find_package(FFmpeg REQUIRED avcodec avutil)
+
+add_library(win-dshow MODULE)
+add_library(OBS::dshow ALIAS win-dshow)
+
+if(NOT TARGET OBS::tiny-nv12-scale)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/shared/obs-tiny-nv12-scale" obs-tiny-nv12-scale)
 endif()
 
-project(win-dshow)
+if(NOT TARGET OBS::shared-memory-queue)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/shared/obs-shared-memory-queue" obs-shared-memory-queue)
+endif()
 
-find_package(FFmpeg REQUIRED COMPONENTS avcodec avutil)
-include_directories(${FFMPEG_INCLUDE_DIRS})
+if(NOT TARGET OBS::libdshowcapture)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/deps/libdshowcapture" libdshowcapture)
+endif()
 
-set(win-dshow_HEADERS
-	encode-dstr.hpp
-	ffmpeg-decode.h)
+if(NOT TARGET OBS::winhandle)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/libobs" "${CMAKE_BINARY_DIR}/libobs")
+endif()
 
-set(win-dshow_SOURCES
-	win-dshow.cpp
-	win-dshow-encoder.cpp
-	dshow-plugin.cpp
-	ffmpeg-decode.c)
+target_sources(
+  win-dshow
+  PRIVATE dshow-plugin.cpp encode-dstr.hpp ffmpeg-decode.c ffmpeg-decode.h win-dshow-encoder.cpp win-dshow.cpp
+)
 
-set(libdshowcapture_SOURCES
-	libdshowcapture/source/capture-filter.cpp
-	libdshowcapture/source/output-filter.cpp
-	libdshowcapture/source/dshowcapture.cpp
-	libdshowcapture/source/dshowencode.cpp
-	libdshowcapture/source/device.cpp
-	libdshowcapture/source/encoder.cpp
-	libdshowcapture/source/dshow-base.cpp
-	libdshowcapture/source/dshow-demux.cpp
-	libdshowcapture/source/dshow-enum.cpp
-	libdshowcapture/source/dshow-formats.cpp
-	libdshowcapture/source/dshow-media-type.cpp
-	libdshowcapture/source/dshow-encoded-device.cpp
-	libdshowcapture/source/log.cpp)
+configure_file(cmake/windows/obs-module.rc.in win-dshow.rc)
+target_sources(win-dshow PRIVATE win-dshow.rc)
 
-set(libdshowcapture_HEADERS
-	libdshowcapture/dshowcapture.hpp
-	libdshowcapture/source/external/IVideoCaptureFilter.h
-	libdshowcapture/source/capture-filter.hpp
-	libdshowcapture/source/output-filter.hpp
-	libdshowcapture/source/device.hpp
-	libdshowcapture/source/encoder.hpp
-	libdshowcapture/source/dshow-base.hpp
-	libdshowcapture/source/dshow-demux.hpp
-	libdshowcapture/source/dshow-device-defs.hpp
-	libdshowcapture/source/dshow-enum.hpp
-	libdshowcapture/source/dshow-formats.hpp
-	libdshowcapture/source/dshow-media-type.hpp
-	libdshowcapture/source/log.hpp)
+target_link_libraries(
+  win-dshow
+  PRIVATE
+    OBS::libobs
+    OBS::w32-pthreads
+    OBS::libdshowcapture
+    OBS::tiny-nv12-scale
+    OBS::shared-memory-queue
+    OBS::winhandle
+    FFmpeg::avcodec
+    FFmpeg::avutil
+    strmiids
+    winmm
+)
 
-add_library(win-dshow MODULE
-	${win-dshow_SOURCES}
-	${win-dshow_HEADERS}
-	${libdshowcapture_SOURCES}
-	${libdshowcapture_HEADERS})
-target_link_libraries(win-dshow
-	libobs
-	strmiids
-	ksuser
-	wmcodecdspuuid
-	${FFMPEG_LIBRARIES})
+add_subdirectory(virtualcam-module)
 
-install_obs_plugin_with_data(win-dshow data)
+if(TARGET OBS::virtualcam AND TARGET OBS::virtualcam-guid)
+  target_sources(win-dshow PRIVATE virtualcam.c)
+  target_link_libraries(win-dshow PRIVATE OBS::virtualcam-guid)
+  target_compile_definitions(win-dshow PRIVATE VIRTUALCAM_AVAILABLE)
+
+  add_dependencies(win-dshow obs-virtualcam-module)
+endif()
+
+set_target_properties_obs(win-dshow PROPERTIES FOLDER plugins/win-dshow PREFIX "")

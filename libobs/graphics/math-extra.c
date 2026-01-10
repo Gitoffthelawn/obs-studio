@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -64,15 +64,14 @@ void polar_to_norm(struct vec3 *dst, const struct vec2 *polar)
 	dst->z = cosf(polar->x);
 }
 
-float calc_torquef(float val1, float val2, float torque, float min_adjust,
-		   float t)
+float calc_torquef(float val1, float val2, float torque, float min_adjust, float t)
 {
 	float out = val1;
 	float dist;
 	bool over;
 
 	if (close_float(val1, val2, EPSILON))
-		return val1;
+		return val2;
 
 	dist = (val2 - val1) * torque;
 	over = dist > 0.0f;
@@ -94,14 +93,14 @@ float calc_torquef(float val1, float val2, float torque, float min_adjust,
 	return out;
 }
 
-void calc_torque(struct vec3 *dst, const struct vec3 *v1, const struct vec3 *v2,
-		 float torque, float min_adjust, float t)
+void calc_torque(struct vec3 *dst, const struct vec3 *v1, const struct vec3 *v2, float torque, float min_adjust,
+		 float t)
 {
 	struct vec3 line, dir;
 	float orig_dist, torque_dist, adjust_dist;
 
 	if (vec3_close(v1, v2, EPSILON)) {
-		vec3_copy(dst, v1);
+		vec3_copy(dst, v2);
 		return;
 	}
 

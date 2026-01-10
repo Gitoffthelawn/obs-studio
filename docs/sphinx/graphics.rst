@@ -77,6 +77,7 @@ Then the uniforms are set through the following functions:
 - :c:func:`gs_effect_set_vec3()`
 - :c:func:`gs_effect_set_vec4()`
 - :c:func:`gs_effect_set_texture()`
+- :c:func:`gs_effect_set_texture_srgb()`
 
 There are two "universal" effect parameters that may be expected of
 effects:  **ViewProj**, and **image**.  The **ViewProj** parameter
@@ -84,7 +85,7 @@ effects:  **ViewProj**, and **image**.  The **ViewProj** parameter
 combination.  The **image** parameter (which is a texture2d) is a
 commonly used parameter for the main texture; this parameter will be
 used with the functions :c:func:`obs_source_draw()`,
-:c:func:`gs_draw_sprite()`, and
+:c:func:`gs_draw_sprite()`, :c:func:`gs_draw_quadf()`, and
 :c:func:`obs_source_process_filter_end()`.
 
 Here is an example of effect parameters:
@@ -264,8 +265,8 @@ would be used:
    uniform texture2d image;
 
    struct VertInOut {
-           float4 my_position : POSITION;
-           float2 my_texcoord : TEXCOORD0;
+           float4 pos : POSITION;
+           float2 uv : TEXCOORD0;
    };
 
    VertInOut MyVertexShaderFunc(VertInOut vert_in)

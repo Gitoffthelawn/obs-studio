@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Hugh Bailey <obs.jim@gmail.com>
+ * Copyright (c) 2023 Lain Bailey <lain@obsproject.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -77,14 +77,18 @@ int os_event_wait(os_event_t *event)
 {
 	int code = 0;
 	pthread_mutex_lock(&event->mutex);
-	if (!event->signalled)
+	while (!event->signalled) {
 		code = pthread_cond_wait(&event->cond, &event->mutex);
+		if (code != 0)
+			break;
+	}
 
 	if (code == 0) {
 		if (!event->manual)
 			event->signalled = false;
-		pthread_mutex_unlock(&event->mutex);
 	}
+
+	pthread_mutex_unlock(&event->mutex);
 
 	return code;
 }
@@ -93,7 +97,7 @@ static inline void add_ms_to_ts(struct timespec *ts, unsigned long milliseconds)
 {
 	ts->tv_sec += milliseconds / 1000;
 	ts->tv_nsec += (milliseconds % 1000) * 1000000;
-	if (ts->tv_nsec > 1000000000) {
+	if (ts->tv_nsec >= 1000000000) {
 		ts->tv_sec += 1;
 		ts->tv_nsec -= 1000000000;
 	}
@@ -103,7 +107,7 @@ int os_event_timedwait(os_event_t *event, unsigned long milliseconds)
 {
 	int code = 0;
 	pthread_mutex_lock(&event->mutex);
-	if (!event->signalled) {
+	while (!event->signalled) {
 		struct timespec ts;
 #if defined(__APPLE__) || defined(__MINGW32__)
 		struct timeval tv;
@@ -115,6 +119,8 @@ int os_event_timedwait(os_event_t *event, unsigned long milliseconds)
 #endif
 		add_ms_to_ts(&ts, milliseconds);
 		code = pthread_cond_timedwait(&event->cond, &event->mutex, &ts);
+		if (code != 0)
+			break;
 	}
 
 	if (code == 0) {

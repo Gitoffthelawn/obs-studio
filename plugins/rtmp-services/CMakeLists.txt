@@ -1,48 +1,59 @@
-project(rtmp-services)
+cmake_minimum_required(VERSION 3.28...3.30)
 
-find_package(Libcurl REQUIRED)
+option(ENABLE_SERVICE_UPDATES "Checks for service updates" ON)
 
-include_directories(${LIBCURL_INCLUDE_DIRS})
+set(
+  RTMP_SERVICES_URL
+  "https://obsproject.com/obs2_update/rtmp-services"
+  CACHE STRING
+  "Default services package URL"
+  FORCE
+)
+mark_as_advanced(RTMP_SERVICES_URL)
 
-include_directories(${OBS_JANSSON_INCLUDE_DIRS})
+if(NOT TARGET OBS::file-updater)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/shared/file-updater" "${CMAKE_BINARY_DIR}/shared/file-updater")
+endif()
 
-set(rtmp-services_SOURCES
-	twitch.c
-	younow.c
-	rtmp-common.c
-	rtmp-custom.c
-	rtmp-services-main.c)
+find_package(jansson REQUIRED)
 
-set(rtmp-services_HEADERS
-	twitch.h
-	younow.h
-	rtmp-format-ver.h)
+add_library(rtmp-services MODULE)
+add_library(OBS::rtmp-services ALIAS rtmp-services)
 
-set(RTMP_SERVICES_URL
-	"https://obsproject.com/obs2_update/rtmp-services"
-	CACHE STRING "Default services package URL")
-option(CHECK_FOR_SERVICE_UPDATES "Checks for service updates" OFF)
+target_sources(
+  rtmp-services
+  PRIVATE
+    rtmp-common.c
+    rtmp-custom.c
+    rtmp-format-ver.h
+    rtmp-services-main.c
+    service-specific/amazon-ivs.c
+    service-specific/amazon-ivs.h
+    service-specific/dacast.c
+    service-specific/dacast.h
+    service-specific/nimotv.c
+    service-specific/nimotv.h
+    service-specific/service-ingest.c
+    service-specific/service-ingest.h
+    service-specific/showroom.c
+    service-specific/showroom.h
+    service-specific/twitch.c
+    service-specific/twitch.h
+)
 
-configure_file(
-	"${CMAKE_CURRENT_SOURCE_DIR}/lookup-config.h.in"
-	"${CMAKE_BINARY_DIR}/plugins/rtmp-services/lookup-config.h")
+target_compile_definitions(
+  rtmp-services
+  PRIVATE SERVICES_URL="${RTMP_SERVICES_URL}" $<$<BOOL:${ENABLE_SERVICE_UPDATES}>:ENABLE_SERVICE_UPDATES>
+)
 
-set(rtmp-services_config_HEADERS
-	"${CMAKE_BINARY_DIR}/plugins/rtmp-services/lookup-config.h")
+target_link_libraries(rtmp-services PRIVATE OBS::libobs OBS::file-updater jansson::jansson)
 
-add_library(rtmp-services MODULE
-	${rtmp-services_SOURCES}
-	${rtmp-services_HEADERS}
-	${rtmp-services_config_HEADERS})
+# Remove once jansson has been fixed on obs-deps
+target_link_options(rtmp-services PRIVATE $<$<PLATFORM_ID:Windows>:/IGNORE:4098>)
 
-target_link_libraries(rtmp-services
-	libobs
-	file-updater
-	${OBS_JANSSON_IMPORT}
-	${LIBCURL_LIBRARIES})
+if(OS_WINDOWS)
+  configure_file(cmake/windows/obs-module.rc.in rtmp-services.rc)
+  target_sources(rtmp-services PRIVATE rtmp-services.rc)
+endif()
 
-target_include_directories(rtmp-services
-	PUBLIC
-		"$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/plugins/rtmp-services>")
-
-install_obs_plugin_with_data(rtmp-services data)
+set_target_properties_obs(rtmp-services PROPERTIES FOLDER plugins PREFIX "")

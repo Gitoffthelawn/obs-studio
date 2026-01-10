@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -28,10 +28,10 @@ struct ShaderProcessor {
 	gs_device_t *device;
 	ShaderParser parser;
 
-	void BuildInputLayout(vector<D3D11_INPUT_ELEMENT_DESC> &inputs);
-	void BuildParams(vector<gs_shader_param> &params);
-	void BuildSamplers(vector<unique_ptr<ShaderSampler>> &samplers);
-	void BuildString(string &outputString);
+	void BuildInputLayout(std::vector<D3D11_INPUT_ELEMENT_DESC> &inputs);
+	void BuildParams(std::vector<gs_shader_param> &params);
+	void BuildSamplers(std::vector<std::unique_ptr<ShaderSampler>> &samplers);
+	void BuildString(std::string &outputString);
 	void Process(const char *shader_string, const char *file);
 
 	inline ShaderProcessor(gs_device_t *device) : device(device) {}

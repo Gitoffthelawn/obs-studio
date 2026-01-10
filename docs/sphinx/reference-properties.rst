@@ -71,6 +71,22 @@ General Functions
 
 ---------------------
 
+.. function:: obs_properties_t *obs_properties_get_parent(obs_properties_t *props)
+
+---------------------
+
+.. function:: void obs_properties_remove_by_name(obs_properties_t *props, const char *property)
+
+   Removes a property from a properties list. Only valid in ``get_properties``,
+   ``script_properties`` for scripts, ``modified_callback``, and ``modified_callback2``.
+   ``modified_callback`` and ``modified_callback2`` *must* return true so that
+   all UI properties are rebuilt. Returning false is undefined behavior.
+
+   :param props:    Properties to remove from.
+   :param property: Name of the property to remove.
+
+---------------------
+
 
 Property Object Functions
 -------------------------
@@ -140,8 +156,16 @@ Property Object Functions
                           - **OBS_TEXT_DEFAULT** - Single line of text
                           - **OBS_TEXT_PASSWORD** - Single line of text (passworded)
                           - **OBS_TEXT_MULTILINE** - Multi-line text
+                          - **OBS_TEXT_INFO** - Read-only informative text, behaves differently
+                            depending on wether description, string value and long description
+                            are set
 
    :return:               The property
+
+   Important Related Functions:
+
+   - :c:func:`obs_property_text_set_info_type`
+   - :c:func:`obs_property_text_set_info_word_wrap`
 
 ---------------------
 
@@ -150,7 +174,7 @@ Property Object Functions
    Adds a 'path' property.  Can be a directory or a file.
 
    If target is a file path, the filters should be this format, separated by
-   double semi-colens, and extensions separated by space::
+   double semicolons, and extensions separated by space::
 
      "Example types 1 and 2 (*.ex1 *.ex2);;Example type 3 (*.ex3)"
 
@@ -164,7 +188,7 @@ Property Object Functions
 
    :param    filter:       If type is a file path, then describes the file filter
                            that the user can browse.  Items are separated via
-                           double semi-colens.  If multiple file types in a
+                           double semicolons.  If multiple file types in a
                            filter, separate with space.
    :param    default_path: The default path to start in, or *NULL*
    :return:                The property
@@ -182,7 +206,10 @@ Property Object Functions
 
                           - **OBS_COMBO_TYPE_EDITABLE** - Can be edited.
                             Only used with string lists.
-                          - **OBS_COMBO_TYPE_LIST** - Not editable.
+                          - **OBS_COMBO_TYPE_LIST** - Not editable. Displayed as combo box.
+                          - **OBS_COMBO_TYPE_RADIO** - Not editable. Displayed as radio buttons.
+
+                              .. versionadded:: 30.0
 
    :param    format:      Can be one of the following values:
 
@@ -190,6 +217,9 @@ Property Object Functions
                           - **OBS_COMBO_FORMAT_FLOAT** - Floating point
                             list
                           - **OBS_COMBO_FORMAT_STRING** - String list
+                          - **OBS_COMBO_FORMAT_BOOL** - Boolean list
+
+                              .. versionadded:: 30.0
 
    :return:               The property
 
@@ -208,7 +238,19 @@ Property Object Functions
 
 .. function:: obs_property_t *obs_properties_add_color(obs_properties_t *props, const char *name, const char *description)
 
-   Adds a color property.
+   Adds a color property without alpha (stored internally with an alpha value of 255).
+   The color can be retrieved from an :c:type:`obs_data_t` object by using :c:func:`obs_data_get_int()`.
+
+   :param    name:        Setting identifier string
+   :param    description: Localized name shown to user
+   :return:               The property
+
+---------------------
+
+.. function:: obs_property_t *obs_properties_add_color_alpha(obs_properties_t *props, const char *name, const char *description)
+
+   Adds a color property with alpha. The color can be retrieved from an
+   :c:type:`obs_data_t` object by using :c:func:`obs_data_get_int()`.
 
    :param    name:        Setting identifier string
    :param    description: Localized name shown to user
@@ -217,20 +259,45 @@ Property Object Functions
 ---------------------
 
 .. function:: obs_property_t *obs_properties_add_button(obs_properties_t *props, const char *name, const char *text, obs_property_clicked_t callback)
+              obs_property_t *obs_properties_add_button2(obs_properties_t *props, const char *name, const char *text, obs_property_clicked_t callback, void *priv)
 
    Adds a button property.  This property does not actually store any
    settings; it's used to implement a button in user interface if the
    properties are used to generate user interface.
 
+   If the properties need to be refreshed due to changes to the property layout,
+   the callback should return true, otherwise return false.
+
    :param    name:        Setting identifier string
-   :param    description: Localized name shown to user
+   :param    text:        Localized name shown to user
+   :param    callback:    Callback to be executed when the button is pressed. Note that if the property
+                          is created with :c:func:`obs_properties_add_button` instead of
+                          :c:func:`obs_properties_add_button2`, the value of ``data`` is determined by
+                          the caller of :c:func:`obs_property_button_clicked`, and as such unspecified
+                          by libobs.
+   :param    priv:        Pointer passed back as the `data` argument of the callback
    :return:               The property
+
+   Important Related Functions:
+
+      - :c:func:`obs_property_button_set_type`
+      - :c:func:`obs_property_button_set_url`
+
+   For scripting, use :py:func:`obs_properties_add_button`.
+
+   Relevant data types used with this function:
+
+.. code:: cpp
+
+   typedef bool (*obs_property_clicked_t)(obs_properties_t *props,
+                   obs_property_t *property, void *data);
 
 ---------------------
 
 .. function:: obs_property_t *obs_properties_add_font(obs_properties_t *props, const char *name, const char *description)
 
-   Adds a font property.
+   Adds a font property. The font can be retrieved from an :c:type:`obs_data_t`
+   object by using :c:func:`obs_data_get_obj()`.
 
    :param    name:        Setting identifier string
    :param    description: Localized name shown to user
@@ -240,7 +307,8 @@ Property Object Functions
 
 .. function:: obs_property_t *obs_properties_add_editable_list(obs_properties_t *props, const char *name, const char *description, enum obs_editable_list_type type, const char *filter, const char *default_path)
 
-   Adds a list in which the user can add/insert/remove items.
+   Adds a list in which the user can add/insert/remove items. The items can be
+   retrieved from an :c:type:`obs_data_t` object by using :c:func:`obs_data_get_array()`.
 
    :param    name:         Setting identifier string
    :param    description:  Localized name shown to user
@@ -273,6 +341,29 @@ Property Object Functions
    - :c:func:`obs_property_frame_rate_fps_range_add`
    - :c:func:`obs_property_frame_rate_option_insert`
    - :c:func:`obs_property_frame_rate_fps_range_insert`
+
+---------------------
+
+.. function:: obs_property_t *obs_properties_add_group(obs_properties_t *props, const char *name, const char *description, enum obs_group_type type, obs_properties_t *group)
+
+   Adds a property group.
+
+   :param    name:        Setting identifier string
+   :param    description: Localized name shown to user
+   :param    type:        Can be one of the following values:
+
+                          - **OBS_GROUP_NORMAL** - A normal group with just a name and content.
+                          - **OBS_GROUP_CHECKABLE** - A checkable group with a checkbox, name and content.
+
+   :param    group:       Group to add
+
+   :return:               The property
+
+   Important Related Functions:
+
+   - :c:func:`obs_property_group_type`
+   - :c:func:`obs_property_group_content`
+   - :c:func:`obs_properties_get_parent`
 
 ---------------------
 
@@ -340,6 +431,7 @@ Property Enumeration Functions
             - OBS_PROPERTY_FONT
             - OBS_PROPERTY_EDITABLE_LIST
             - OBS_PROPERTY_FRAME_RATE
+            - OBS_PROPERTY_GROUP
 
 ---------------------
 
@@ -367,6 +459,10 @@ Property Enumeration Functions
 
 ---------------------
 
+.. function:: const char *           obs_property_int_suffix(obs_property_t *p)
+
+---------------------
+
 .. function:: double                 obs_property_float_min(obs_property_t *p)
 
 ---------------------
@@ -383,7 +479,33 @@ Property Enumeration Functions
 
 ---------------------
 
+.. function:: const char *           obs_property_float_suffix(obs_property_t *p)
+
+---------------------
+
 .. function:: enum obs_text_type     obs_property_text_type(obs_property_t *p)
+
+---------------------
+
+.. function:: bool                   obs_property_text_monospace(obs_property_t *p)
+
+   Returns whether the input of the text property should be rendered
+   with a monospace font or not. Only has an effect if the text type
+   of the property is ``OBS_TEXT_MULTILINE``, even if this returns *true*.
+
+---------------------
+
+.. function:: enum obs_text_info_type     obs_property_text_info_type(obs_property_t *p)
+
+   :return: One of the following values:
+
+             - OBS_TEXT_INFO_NORMAL
+             - OBS_TEXT_INFO_WARNING
+             - OBS_TEXT_INFO_ERROR
+
+---------------------
+
+.. function:: bool     obs_property_text_info_word_wrap(obs_property_t *p)
 
 ---------------------
 
@@ -467,21 +589,54 @@ Property Enumeration Functions
 
 ---------------------
 
+.. function:: enum obs_button_type obs_property_button_type(obs_property_t *p)
+
+   :return: One of the following values:
+
+             - OBS_BUTTON_DEFAULT
+             - OBS_BUTTON_URL
+
+---------------------
+
+.. function:: const char *obs_property_button_url(obs_property_t *p)
+
+---------------------
+
+.. function:: enum obs_group_type obs_property_group_type(obs_property_t *p)
+
+  :return: One of the following values:
+
+            - OBS_COMBO_INVALID
+            - OBS_GROUP_NORMAL
+            - OBS_GROUP_CHECKABLE
+
+---------------------
+
+.. function:: obs_properties_t *obs_property_group_content(obs_property_t *p)
+
+---------------------
+
 
 Property Modification Functions
 -------------------------------
 
 .. function:: void obs_property_set_modified_callback(obs_property_t *p, obs_property_modified_t modified)
+              void obs_property_set_modified_callback2(obs_property_t *p, obs_property_modified2_t modified2, void *priv)
 
    Allows the ability to change the properties depending on what
-   settings are used by the user.
+   settings are used by the user. The callback should return ``true``
+   if the property widgets need to be refreshed due to changes to the
+   property layout.
 
-   Relevant data types used with this function:
+   Relevant data types used with these functions:
 
 .. code:: cpp
 
-   typedef bool (*obs_property_clicked_t)(obs_properties_t *props,
-                   obs_property_t *property, void *data);
+   typedef bool (*obs_property_modified_t)(obs_properties_t *props,
+                   obs_property_t *property, obs_data_t *settings);
+   typedef bool (*obs_property_modified2_t)(void *priv,
+                   obs_properties_t *props, obs_property_t *property,
+                   obs_data_t *settings);
 
 ---------------------
 
@@ -490,6 +645,16 @@ Property Modification Functions
 ---------------------
 
 .. function:: bool obs_property_button_clicked(obs_property_t *p, void *obj)
+
+   Calls the ``callback`` of the button.
+
+   :param p:   The property
+   :param obj: Must be a pointer to an object of type ``obs_canvas_t``, ``obs_source_t``,
+               ``obs_output_t``, ``obs_encoder_t``, or ``obs_service_t``.
+               If the property was created with :c:func:`obs_properties_add_button`, that
+               object's context will be passed as the ``obj`` parameter.
+               If the property was created with :c:func:`obs_properties_add_button2`, it
+               will be ignored.
 
 ---------------------
 
@@ -522,6 +687,44 @@ Property Modification Functions
 
 ---------------------
 
+.. function:: void obs_property_int_set_suffix(obs_property_t *p, const char *suffix)
+
+   Adds a suffix to the int property, such that 100 will show up
+   as "100ms" if the suffix is "ms". The user will only be able
+   to edit the number, not the suffix.
+
+---------------------
+
+.. function:: void obs_property_float_set_suffix(obs_property_t *p, const char *suffix)
+
+   Adds a suffix to the float property, such that 1.5 will show up
+   as "1.5s" if the suffix is "s". The user will only be able
+   to edit the number, not the suffix.
+
+---------------------
+
+.. function:: void obs_property_text_set_monospace(obs_property_t *p, bool monospace)
+
+   Sets whether the input of text property should be rendered with
+   a monospace font or not. Only has an effect if the text type of
+   the property is ``OBS_TEXT_MULTILINE``.
+
+---------------------
+
+.. function:: void     obs_property_text_set_info_type(obs_property_t *p, enum obs_text_info_type type)
+
+   :param   type: Can be one of the following values:
+
+                  - **OBS_TEXT_INFO_NORMAL** - To show a basic message
+                  - **OBS_TEXT_INFO_WARNING** - To show a warning
+                  - **OBS_TEXT_INFO_ERROR** - To show an error
+
+---------------------
+
+.. function:: void     obs_property_text_set_info_word_wrap(obs_property_t *p, bool word_wrap)
+
+---------------------
+
 .. function:: void obs_property_list_clear(obs_property_t *p)
 
 ---------------------
@@ -530,11 +733,19 @@ Property Modification Functions
 
    Adds a string to a string list.
 
+   :param    name: Localized name shown to user
+   :param    val:  The actual string value stored and will be returned by :c:func:`obs_data_get_string`
+   :returns: The index of the list item.
+
 ---------------------
 
 .. function:: size_t obs_property_list_add_int(obs_property_t *p, const char *name, long long val)
 
    Adds an integer to a integer list.
+
+   :param    name: Localized name shown to user
+   :param    val:  The actual int value stored and will be returned by :c:func:`obs_data_get_int`
+   :returns: The index of the list item.
 
 ---------------------
 
@@ -542,11 +753,19 @@ Property Modification Functions
 
    Adds a floating point to a floating point list.
 
+   :param    name: Localized name shown to user
+   :param    val:  The actual float value stored and will be returned by :c:func:`obs_data_get_double`
+   :returns: The index of the list item.
+
 ---------------------
 
 .. function:: void obs_property_list_insert_string(obs_property_t *p, size_t idx, const char *name, const char *val)
 
    Inserts a string in to a string list.
+
+   :param    idx:  The index of the list item
+   :param    name: Localized name shown to user
+   :param    val:  The actual string value stored and will be returned by :c:func:`obs_data_get_string`
 
 ---------------------
 
@@ -554,11 +773,19 @@ Property Modification Functions
 
    Inserts an integer in to an integer list.
 
+   :param    idx:  The index of the list item
+   :param    name: Localized name shown to user
+   :param    val:  The actual int value stored and will be returned by :c:func:`obs_data_get_int`
+
 ---------------------
 
 .. function:: void obs_property_list_insert_float(obs_property_t *p, size_t idx, const char *name, double val)
 
    Inserts a floating point in to a floating point list.
+
+   :param    idx:  The index of the list item.
+   :param    name: Localized name shown to user
+   :param    val:  The actual float value stored and will be returned by :c:func:`obs_data_get_double`
 
 ---------------------
 
@@ -595,3 +822,22 @@ Property Modification Functions
 ---------------------
 
 .. function:: void obs_property_frame_rate_fps_range_insert(obs_property_t *p, size_t idx, struct media_frames_per_second min, struct media_frames_per_second max)
+
+---------------------
+
+.. function:: void obs_property_button_set_type(obs_property_t *p, enum obs_button_type type)
+
+   Sets the type of the button. The button's ``callback`` will be called regardless of type.
+
+   :param   type: Can be one of the following values:
+
+                  - **OBS_BUTTON_DEFAULT** - Standard button
+                  - **OBS_BUTTON_URL** - Button that opens a URL
+   :return:       The property
+
+---------------------
+
+.. function:: void obs_property_button_set_url(obs_property_t *p, char *url)
+
+   :param p:   The property
+   :param url: The URL to be opened if the button is of type ``OBS_BUTTON_URL``

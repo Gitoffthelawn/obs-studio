@@ -15,6 +15,7 @@ MODULE_EXPORT const char *obs_module_description(void)
 /* libvlc core */
 LIBVLC_NEW libvlc_new_;
 LIBVLC_RELEASE libvlc_release_;
+LIBVLC_GET_VERSION libvlc_get_version_;
 LIBVLC_CLOCK libvlc_clock_;
 LIBVLC_EVENT_ATTACH libvlc_event_attach_;
 
@@ -23,7 +24,10 @@ LIBVLC_MEDIA_NEW_PATH libvlc_media_new_path_;
 LIBVLC_MEDIA_NEW_LOCATION libvlc_media_new_location_;
 LIBVLC_MEDIA_ADD_OPTION libvlc_media_add_option_;
 LIBVLC_MEDIA_RELEASE libvlc_media_release_;
-LIBVLC_MEDIA_RELEASE libvlc_media_retain_;
+LIBVLC_MEDIA_RETAIN libvlc_media_retain_;
+LIBVLC_MEDIA_GET_META libvlc_media_get_meta_;
+LIBVLC_MEDIA_TRACKS_GET libvlc_media_tracks_get_;
+LIBVLC_MEDIA_TRACKS_RELEASE libvlc_media_tracks_release_;
 
 /* libvlc media player */
 LIBVLC_MEDIA_PLAYER_NEW libvlc_media_player_new_;
@@ -41,6 +45,7 @@ LIBVLC_VIDEO_GET_SIZE libvlc_video_get_size_;
 LIBVLC_MEDIA_PLAYER_EVENT_MANAGER libvlc_media_player_event_manager_;
 LIBVLC_MEDIA_PLAYER_GET_STATE libvlc_media_player_get_state_;
 LIBVLC_MEDIA_PLAYER_GET_LENGTH libvlc_media_player_get_length_;
+LIBVLC_MEDIA_PLAYER_GET_MEDIA libvlc_media_player_get_media_;
 
 /* libvlc media list */
 LIBVLC_MEDIA_LIST_NEW libvlc_media_list_new_;
@@ -80,8 +85,8 @@ static bool load_vlc_funcs(void)
 		func##_ = os_dlsym(libvlc_module, #func);       \
 		if (!func##_) {                                 \
 			blog(LOG_WARNING,                       \
-			     "Could not func VLC function %s, " \
-			     "VLC loading failed",              \
+			     "[vlc-video]: Could not func VLC " \
+			     "function %s, VLC loading failed", \
 			     #func);                            \
 			return false;                           \
 		}                                               \
@@ -90,6 +95,7 @@ static bool load_vlc_funcs(void)
 	/* libvlc core */
 	LOAD_VLC_FUNC(libvlc_new);
 	LOAD_VLC_FUNC(libvlc_release);
+	LOAD_VLC_FUNC(libvlc_get_version);
 	LOAD_VLC_FUNC(libvlc_clock);
 	LOAD_VLC_FUNC(libvlc_event_attach);
 
@@ -99,6 +105,9 @@ static bool load_vlc_funcs(void)
 	LOAD_VLC_FUNC(libvlc_media_add_option);
 	LOAD_VLC_FUNC(libvlc_media_release);
 	LOAD_VLC_FUNC(libvlc_media_retain);
+	LOAD_VLC_FUNC(libvlc_media_get_meta);
+	LOAD_VLC_FUNC(libvlc_media_tracks_get);
+	LOAD_VLC_FUNC(libvlc_media_tracks_release);
 
 	/* libvlc media player */
 	LOAD_VLC_FUNC(libvlc_media_player_new);
@@ -116,6 +125,7 @@ static bool load_vlc_funcs(void)
 	LOAD_VLC_FUNC(libvlc_media_player_event_manager);
 	LOAD_VLC_FUNC(libvlc_media_player_get_state);
 	LOAD_VLC_FUNC(libvlc_media_player_get_length);
+	LOAD_VLC_FUNC(libvlc_media_player_get_media);
 
 	/* libvlc media list */
 	LOAD_VLC_FUNC(libvlc_media_list_new);
@@ -151,14 +161,12 @@ static bool load_libvlc_module(void)
 
 	memset(path, 0, 1024 * sizeof(wchar_t));
 
-	status = RegOpenKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\VideoLAN\\VLC",
-			     &key);
+	status = RegOpenKeyW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\VideoLAN\\VLC", &key);
 	if (status != ERROR_SUCCESS)
 		return false;
 
 	size = 1024;
-	status = RegQueryValueExW(key, L"InstallDir", NULL, NULL, (LPBYTE)path,
-				  &size);
+	status = RegQueryValueExW(key, L"InstallDir", NULL, NULL, (LPBYTE)path, &size);
 	if (status == ERROR_SUCCESS) {
 		wcscat(path, L"\\libvlc.dll");
 		os_wcs_to_utf8_ptr(path, 0, &path_utf8);
@@ -169,9 +177,9 @@ static bool load_libvlc_module(void)
 	RegCloseKey(key);
 #else
 
+/* According to otoolo -L, this is what libvlc.dylib wants. */
 #ifdef __APPLE__
 #define LIBVLC_DIR "/Applications/VLC.app/Contents/MacOS/"
-/* According to otoolo -L, this is what libvlc.dylib wants. */
 #define LIBVLC_CORE_FILE LIBVLC_DIR "lib/libvlccore.dylib"
 #define LIBVLC_FILE LIBVLC_DIR "lib/libvlc.5.dylib"
 	setenv("VLC_PLUGIN_PATH", LIBVLC_DIR "plugins", false);
@@ -198,7 +206,7 @@ bool load_libvlc(void)
 
 	libvlc = libvlc_new_(0, 0);
 	if (!libvlc) {
-		blog(LOG_INFO, "Couldn't create libvlc instance");
+		blog(LOG_INFO, "[vlc-video]: Couldn't create libvlc instance");
 		return false;
 	}
 
@@ -209,15 +217,15 @@ bool load_libvlc(void)
 bool obs_module_load(void)
 {
 	if (!load_libvlc_module()) {
-		blog(LOG_INFO, "Couldn't find VLC installation, VLC video "
-			       "source disabled");
+		blog(LOG_INFO, "[vlc-video]: Couldn't find VLC installation, "
+			       "VLC video source disabled");
 		return true;
 	}
 
 	if (!load_vlc_funcs())
 		return true;
 
-	blog(LOG_INFO, "VLC found, VLC video source enabled");
+	blog(LOG_INFO, "[vlc-video]: VLC %s found, VLC video source enabled", libvlc_get_version_());
 
 	obs_register_source(&vlc_source_info);
 	return true;

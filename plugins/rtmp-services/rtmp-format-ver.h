@@ -1,3 +1,3 @@
 #pragma once
 
-#define RTMP_SERVICES_FORMAT_VERSION 2
+static const int RTMP_SERVICES_FORMAT_VERSION = 5;

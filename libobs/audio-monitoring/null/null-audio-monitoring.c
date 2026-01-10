@@ -1,5 +1,10 @@
 #include <obs-internal.h>
 
+bool obs_audio_monitoring_available(void)
+{
+	return false;
+}
+
 void obs_enum_audio_monitoring_devices(obs_enum_audio_device_cb cb, void *data)
 {
 	UNUSED_PARAMETER(cb);
@@ -20,4 +25,11 @@ void audio_monitor_reset(struct audio_monitor *monitor)
 void audio_monitor_destroy(struct audio_monitor *monitor)
 {
 	UNUSED_PARAMETER(monitor);
+}
+
+bool devices_match(const char *id1, const char *id2)
+{
+	UNUSED_PARAMETER(id1);
+	UNUSED_PARAMETER(id2);
+	return false;
 }

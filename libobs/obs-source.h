@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013-2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -58,6 +58,7 @@ enum obs_icon_type {
 	OBS_ICON_TYPE_MEDIA,
 	OBS_ICON_TYPE_BROWSER,
 	OBS_ICON_TYPE_CUSTOM,
+	OBS_ICON_TYPE_PROCESS_AUDIO_OUTPUT,
 };
 
 enum obs_media_state {
@@ -186,10 +187,30 @@ enum obs_media_state {
  */
 #define OBS_SOURCE_CONTROLLABLE_MEDIA (1 << 13)
 
+/**
+ * Source type provides cea708 data
+ */
+#define OBS_SOURCE_CEA_708 (1 << 14)
+
+/**
+ * Source understands SRGB rendering
+ */
+#define OBS_SOURCE_SRGB (1 << 15)
+
+/**
+ * Source type prefers not to have its properties shown on creation
+ * (prefers to rely on defaults first)
+ */
+#define OBS_SOURCE_CAP_DONT_SHOW_PROPERTIES (1 << 16)
+
+/**
+ * Source requires a canvas to operate
+ */
+#define OBS_SOURCE_REQUIRES_CANVAS (1 << 17)
+
 /** @} */
 
-typedef void (*obs_source_enum_proc_t)(obs_source_t *parent,
-				       obs_source_t *child, void *param);
+typedef void (*obs_source_enum_proc_t)(obs_source_t *parent, obs_source_t *child, void *param);
 
 struct obs_source_audio_mix {
 	struct audio_output_data output[MAX_AUDIO_MIXES];
@@ -339,8 +360,7 @@ struct obs_source_info {
 	 * @return        New video frame data.  This can defer video data to
 	 *                be drawn later if time is needed for processing
 	 */
-	struct obs_source_frame *(*filter_video)(
-		void *data, struct obs_source_frame *frame);
+	struct obs_source_frame *(*filter_video)(void *data, struct obs_source_frame *frame);
 
 	/**
 	 * Called to filter raw audio data.
@@ -356,8 +376,7 @@ struct obs_source_info {
 	 *                until the next call to the filter_audio callback or
 	 *                until the filter is removed/destroyed.
 	 */
-	struct obs_audio_data *(*filter_audio)(void *data,
-					       struct obs_audio_data *audio);
+	struct obs_audio_data *(*filter_audio)(void *data, struct obs_audio_data *audio);
 
 	/**
 	 * Called to enumerate all active sources being used within this
@@ -368,9 +387,7 @@ struct obs_source_info {
 	 * @param  enum_callback  Enumeration callback
 	 * @param  param          User data to pass to callback
 	 */
-	void (*enum_active_sources)(void *data,
-				    obs_source_enum_proc_t enum_callback,
-				    void *param);
+	void (*enum_active_sources)(void *data, obs_source_enum_proc_t enum_callback, void *param);
 
 	/**
 	 * Called when saving a source.  This is a separate function because
@@ -403,8 +420,8 @@ struct obs_source_info {
 	 * @param mouse_up     Mouse event type (true if mouse-up)
 	 * @param click_count  Mouse click count (1 for single click, etc.)
 	 */
-	void (*mouse_click)(void *data, const struct obs_mouse_event *event,
-			    int32_t type, bool mouse_up, uint32_t click_count);
+	void (*mouse_click)(void *data, const struct obs_mouse_event *event, int32_t type, bool mouse_up,
+			    uint32_t click_count);
 	/**
 	 * Called when interacting with a source and a mouse-move occurs.
 	 *
@@ -412,8 +429,7 @@ struct obs_source_info {
 	 * @param event        Mouse event properties
 	 * @param mouse_leave  Mouse leave state (true if mouse left source)
 	 */
-	void (*mouse_move)(void *data, const struct obs_mouse_event *event,
-			   bool mouse_leave);
+	void (*mouse_move)(void *data, const struct obs_mouse_event *event, bool mouse_leave);
 
 	/**
 	 * Called when interacting with a source and a mouse-wheel occurs.
@@ -423,8 +439,7 @@ struct obs_source_info {
 	 * @param x_delta      Movement delta in the horizontal direction
 	 * @param y_delta      Movement delta in the vertical direction
 	 */
-	void (*mouse_wheel)(void *data, const struct obs_mouse_event *event,
-			    int x_delta, int y_delta);
+	void (*mouse_wheel)(void *data, const struct obs_mouse_event *event, int x_delta, int y_delta);
 	/**
 	 * Called when interacting with a source and gain focus/lost focus event
 	 * occurs.
@@ -442,8 +457,7 @@ struct obs_source_info {
 	 * @param event        Key event properties
 	 * @param focus        Key event type (true if mouse-up)
 	 */
-	void (*key_click)(void *data, const struct obs_key_event *event,
-			  bool key_up);
+	void (*key_click)(void *data, const struct obs_key_event *event, bool key_up);
 
 	/**
 	 * Called when the filter is removed from a source
@@ -463,10 +477,8 @@ struct obs_source_info {
 	 */
 	void (*free_type_data)(void *type_data);
 
-	bool (*audio_render)(void *data, uint64_t *ts_out,
-			     struct obs_source_audio_mix *audio_output,
-			     uint32_t mixers, size_t channels,
-			     size_t sample_rate);
+	bool (*audio_render)(void *data, uint64_t *ts_out, struct obs_source_audio_mix *audio_output, uint32_t mixers,
+			     size_t channels, size_t sample_rate);
 
 	/**
 	 * Called to enumerate all active and inactive sources being used
@@ -479,16 +491,14 @@ struct obs_source_info {
 	 * @param  enum_callback  Enumeration callback
 	 * @param  param          User data to pass to callback
 	 */
-	void (*enum_all_sources)(void *data,
-				 obs_source_enum_proc_t enum_callback,
-				 void *param);
+	void (*enum_all_sources)(void *data, obs_source_enum_proc_t enum_callback, void *param);
 
 	void (*transition_start)(void *data);
 	void (*transition_stop)(void *data);
 
 	/**
 	 * Gets the default settings for this source
-	 * 
+	 *
 	 * If get_defaults is also defined both will be called, and the first
 	 * call will be to get_defaults, then to get_defaults2.
 	 *
@@ -506,9 +516,8 @@ struct obs_source_info {
 	 */
 	obs_properties_t *(*get_properties2)(void *data, void *type_data);
 
-	bool (*audio_mix)(void *data, uint64_t *ts_out,
-			  struct audio_output_data *audio_output,
-			  size_t channels, size_t sample_rate);
+	bool (*audio_mix)(void *data, uint64_t *ts_out, struct audio_output_data *audio_output, size_t channels,
+			  size_t sample_rate);
 
 	/** Icon type for the source */
 	enum obs_icon_type icon_type;
@@ -525,12 +534,26 @@ struct obs_source_info {
 	enum obs_media_state (*media_get_state)(void *data);
 
 	/* version-related stuff */
-	uint32_t version; /* increment if needed to specify a new version */
+	uint32_t version;           /* increment if needed to specify a new version */
 	const char *unversioned_id; /* set internally, don't set manually */
+
+	/** Missing files **/
+	obs_missing_files_t *(*missing_files)(void *data);
+
+	/** Get color space **/
+	enum gs_color_space (*video_get_color_space)(void *data, size_t count,
+						     const enum gs_color_space *preferred_spaces);
+
+	/**
+	 * Called when the filter is added to a source
+	 *
+	 * @param  data    Filter data
+	 * @param  source  Source that the filter is being added to
+	 */
+	void (*filter_add)(void *data, obs_source_t *source);
 };
 
-EXPORT void obs_register_source_s(const struct obs_source_info *info,
-				  size_t size);
+EXPORT void obs_register_source_s(const struct obs_source_info *info, size_t size);
 
 /**
  * Registers a source definition to the current obs context.  This should be
@@ -538,8 +561,7 @@ EXPORT void obs_register_source_s(const struct obs_source_info *info,
  *
  * @param  info  Pointer to the source definition structure
  */
-#define obs_register_source(info) \
-	obs_register_source_s(info, sizeof(struct obs_source_info))
+#define obs_register_source(info) obs_register_source_s(info, sizeof(struct obs_source_info))
 
 #ifdef __cplusplus
 }

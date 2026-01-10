@@ -21,410 +21,596 @@
 #import <Cocoa/Cocoa.h>
 #import <AppKit/AppKit.h>
 
-//#include "util/darray.h"
-
 struct gl_windowinfo {
-	NSView *view;
-	NSOpenGLContext *context;
-	gs_texture_t *texture;
-	GLuint fbo;
+    NSView *view;
+    NSOpenGLContext *context;
+    gs_texture_t *texture;
+    GLuint fbo;
 };
 
 struct gl_platform {
-	NSOpenGLContext *context;
+    NSOpenGLContext *context;
 };
+
+typedef struct {
+    gs_swapchain_t *swapchain;
+    NSOpenGLContext *platformContext;
+    NSOpenGLContext *swapchainContext;
+    GLuint frameBufferObjectId;
+    enum gs_color_format textureFormat;
+    NSSize textureSize;
+} OBSFrameBufferUpdateData;
 
 static NSOpenGLContext *gl_context_create(NSOpenGLContext *share)
 {
-	unsigned attrib_count = 0;
+    NSOpenGLPixelFormatAttribute attributes[] = {NSOpenGLPFADoubleBuffer, NSOpenGLPFAOpenGLProfile,
+                                                 NSOpenGLProfileVersion3_2Core, 0};
 
-#define ADD_ATTR(x)                                                           \
-	{                                                                     \
-		attributes[attrib_count++] = (NSOpenGLPixelFormatAttribute)x; \
-	}
-#define ADD_ATTR2(x, y)      \
-	{                    \
-		ADD_ATTR(x); \
-		ADD_ATTR(y); \
-	}
+    NSOpenGLPixelFormat *pixelFormat;
+    pixelFormat = [[NSOpenGLPixelFormat alloc] initWithAttributes:attributes];
+    if (!pixelFormat) {
+        blog(LOG_ERROR, "Failed to create pixel format");
+        return nil;
+    }
 
-	NSOpenGLPixelFormatAttribute attributes[40];
+    NSOpenGLContext *context;
+    context = [[NSOpenGLContext alloc] initWithFormat:pixelFormat shareContext:share];
+    [pixelFormat release];
 
-	ADD_ATTR(NSOpenGLPFADoubleBuffer);
-	ADD_ATTR2(NSOpenGLPFAOpenGLProfile, NSOpenGLProfileVersion3_2Core);
-	ADD_ATTR(0);
+    if (!context) {
+        blog(LOG_ERROR, "Failed to create context");
+        return nil;
+    }
 
-#undef ADD_ATTR2
-#undef ADD_ATTR
+    [context clearDrawable];
 
-	NSOpenGLPixelFormat *pf;
-	pf = [[NSOpenGLPixelFormat alloc] initWithAttributes:attributes];
-	if (!pf) {
-		blog(LOG_ERROR, "Failed to create pixel format");
-		return NULL;
-	}
-
-	NSOpenGLContext *context;
-	context = [[NSOpenGLContext alloc] initWithFormat:pf
-					     shareContext:share];
-	[pf release];
-	if (!context) {
-		blog(LOG_ERROR, "Failed to create context");
-		return NULL;
-	}
-
-	[context clearDrawable];
-
-	return context;
+    return context;
 }
 
-struct gl_platform *gl_platform_create(gs_device_t *device, uint32_t adapter)
+struct gl_platform *gl_platform_create(gs_device_t *device __unused, uint32_t adapter __unused)
 {
-	UNUSED_PARAMETER(device);
-	UNUSED_PARAMETER(adapter);
+    NSOpenGLContext *context = gl_context_create(nil);
+    if (!context) {
+        blog(LOG_ERROR, "gl_context_create failed");
+        return NULL;
+    }
 
-	NSOpenGLContext *context = gl_context_create(nil);
-	if (!context) {
-		blog(LOG_ERROR, "gl_context_create failed");
-		return NULL;
-	}
+    [context makeCurrentContext];
+    GLint swapInterval = 0;
+    [context setValues:&swapInterval forParameter:NSOpenGLContextParameterSwapInterval];
+    const bool isOpenGLLoaded = gladLoadGL() != 0;
 
-	[context makeCurrentContext];
-	GLint interval = 0;
-	[context setValues:&interval forParameter:NSOpenGLCPSwapInterval];
-	const bool success = gladLoadGL() != 0;
+    if (!isOpenGLLoaded) {
+        blog(LOG_ERROR, "gladLoadGL failed");
+        [context release];
+        return NULL;
+    }
 
-	if (!success) {
-		blog(LOG_ERROR, "gladLoadGL failed");
-		[context release];
-		return NULL;
-	}
-
-	struct gl_platform *plat = bzalloc(sizeof(struct gl_platform));
-	plat->context = context;
-	return plat;
+    struct gl_platform *platform = bzalloc(sizeof(struct gl_platform));
+    platform->context = context;
+    return platform;
 }
 
 void gl_platform_destroy(struct gl_platform *platform)
 {
-	if (!platform)
-		return;
+    if (!platform)
+        return;
 
-	[platform->context release];
-	platform->context = nil;
+    [platform->context release];
+    platform->context = nil;
 
-	bfree(platform);
+    bfree(platform);
 }
 
 bool gl_platform_init_swapchain(struct gs_swap_chain *swap)
 {
-	NSOpenGLContext *parent = swap->device->plat->context;
-	NSOpenGLContext *context = gl_context_create(parent);
-	bool success = context != nil;
-	if (success) {
-		CGLContextObj parent_obj = [parent CGLContextObj];
-		CGLLockContext(parent_obj);
+    NSOpenGLContext *platformContext = swap->device->plat->context;
+    NSOpenGLContext *swapContext = gl_context_create(platformContext);
 
-		[parent makeCurrentContext];
-		struct gs_init_data *init_data = &swap->info;
-		swap->wi->texture = device_texture_create(
-			swap->device, init_data->cx, init_data->cy,
-			init_data->format, 1, NULL, GS_RENDER_TARGET);
-		glFlush();
-		[NSOpenGLContext clearCurrentContext];
+    BOOL hasFrameBuffer = NO;
 
-		CGLContextObj context_obj = [context CGLContextObj];
-		CGLLockContext(context_obj);
+    if (swapContext) {
+        CGLContextObj platformContextObj = platformContext.CGLContextObj;
+        CGLContextObj swapContextObj = nil;
 
-		[context makeCurrentContext];
-		[context setView:swap->wi->view];
-		GLint interval = 0;
-		[context setValues:&interval
-			forParameter:NSOpenGLCPSwapInterval];
-		gl_gen_framebuffers(1, &swap->wi->fbo);
-		gl_bind_framebuffer(GL_FRAMEBUFFER, swap->wi->fbo);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-				       GL_TEXTURE_2D,
-				       swap->wi->texture->texture, 0);
-		gl_success("glFrameBufferTexture2D");
-		glFlush();
-		[NSOpenGLContext clearCurrentContext];
+        CGLLockContext(platformContextObj);
 
-		CGLUnlockContext(context_obj);
+        [platformContext makeCurrentContext];
 
-		CGLUnlockContext(parent_obj);
+        struct gs_init_data *initData = &swap->info;
+        gs_texture_t *framebufferTexture = device_texture_create(swap->device, initData->cx, initData->cy,
+                                                                 initData->format, 1, NULL, GS_RENDER_TARGET);
 
-		swap->wi->context = context;
-	}
+        if (!framebufferTexture) {
+            blog(LOG_ERROR, "gl_platform_init_swapchain: Unable to generate backing texture for frame buffer.");
+            goto init_swapchain_cleanup;
+        }
+        glFlush();
 
-	return success;
+        [NSOpenGLContext clearCurrentContext];
+
+        swapContextObj = swapContext.CGLContextObj;
+        CGLLockContext(swapContextObj);
+
+        [swapContext makeCurrentContext];
+
+#pragma clang diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        [swapContext setView:swap->wi->view];
+#pragma clang diagnostic pop
+
+        GLint swapInterval = 0;
+        [swapContext setValues:&swapInterval forParameter:NSOpenGLContextParameterSwapInterval];
+
+        GLuint framebufferObjectId = 0;
+        BOOL hasGeneratedFramebuffer = gl_gen_framebuffers(1, &framebufferObjectId);
+        BOOL hasBoundFrameBuffer = gl_bind_framebuffer(GL_FRAMEBUFFER, framebufferObjectId);
+
+        if (!(hasGeneratedFramebuffer && hasBoundFrameBuffer)) {
+            goto init_swapchain_cleanup;
+        }
+
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, framebufferTexture->texture, 0);
+        BOOL hasBoundFramebufferTexture = gl_success("glFrameBufferTexture2D");
+
+        if (!hasBoundFramebufferTexture) {
+            goto init_swapchain_cleanup;
+        }
+
+        glFlush();
+        gl_bind_framebuffer(GL_FRAMEBUFFER, 0);
+
+        hasFrameBuffer = YES;
+        swap->wi->context = swapContext;
+        swap->wi->fbo = framebufferObjectId;
+        swap->wi->texture = framebufferTexture;
+
+init_swapchain_cleanup:
+        [NSOpenGLContext clearCurrentContext];
+        if (swapContextObj) {
+            CGLUnlockContext(swapContextObj);
+        }
+        CGLUnlockContext(platformContextObj);
+    }
+
+    return (swapContext && hasFrameBuffer);
 }
 
 void gl_platform_cleanup_swapchain(struct gs_swap_chain *swap)
 {
-	NSOpenGLContext *parent = swap->device->plat->context;
-	CGLContextObj parent_obj = [parent CGLContextObj];
-	CGLLockContext(parent_obj);
+    NSOpenGLContext *platformContext = swap->device->plat->context;
+    NSOpenGLContext *swapContext = swap->wi->context;
+    gs_texture_t *framebufferTexture = swap->wi->texture;
+    GLuint framebufferObjectId = swap->wi->fbo;
 
-	NSOpenGLContext *context = swap->wi->context;
-	CGLContextObj context_obj = [context CGLContextObj];
-	CGLLockContext(context_obj);
+    if (platformContext && swapContext) {
+        CGLContextObj platformContextObj = platformContext.CGLContextObj;
+        CGLLockContext(platformContextObj);
+        CGLContextObj swapContextObj = swapContext.CGLContextObj;
+        CGLLockContext(swapContextObj);
 
-	[context makeCurrentContext];
-	gl_delete_framebuffers(1, &swap->wi->fbo);
-	glFlush();
-	[NSOpenGLContext clearCurrentContext];
+        [swapContext makeCurrentContext];
 
-	CGLUnlockContext(context_obj);
+        gl_delete_framebuffers(1, &framebufferObjectId);
+        glFlush();
+        [NSOpenGLContext clearCurrentContext];
 
-	[parent makeCurrentContext];
-	gs_texture_destroy(swap->wi->texture);
-	glFlush();
-	[NSOpenGLContext clearCurrentContext];
-	swap->wi->context = nil;
+        CGLUnlockContext(swapContextObj);
 
-	CGLUnlockContext(parent_obj);
+        [platformContext makeCurrentContext];
+        gs_texture_destroy(framebufferTexture);
+        glFlush();
+        [NSOpenGLContext clearCurrentContext];
+
+        CGLUnlockContext(platformContextObj);
+
+        swap->wi->fbo = 0;
+        swap->wi->texture = NULL;
+        swap->wi->context = nil;
+    }
 }
 
 struct gl_windowinfo *gl_windowinfo_create(const struct gs_init_data *info)
 {
-	if (!info)
-		return NULL;
+    if (!(info && info->window.view)) {
+        return NULL;
+    }
 
-	if (!info->window.view)
-		return NULL;
+    NSView *projectorView = info->window.view;
 
-	struct gl_windowinfo *wi = bzalloc(sizeof(struct gl_windowinfo));
+#pragma clang diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    projectorView.wantsBestResolutionOpenGLSurface = YES;
+#pragma clang diagnostic pop
 
-	wi->view = info->window.view;
-	[info->window.view setWantsBestResolutionOpenGLSurface:YES];
+    if (projectorView.window) {
+        projectorView.window.colorSpace = NSColorSpace.sRGBColorSpace;
+    }
 
-	return wi;
+    struct gl_windowinfo *windowInfo = bzalloc(sizeof(struct gl_windowinfo));
+
+    windowInfo->view = projectorView;
+
+    return windowInfo;
 }
 
-void gl_windowinfo_destroy(struct gl_windowinfo *wi)
+void gl_windowinfo_destroy(struct gl_windowinfo *windowInfo)
 {
-	if (!wi)
-		return;
+    if (!windowInfo)
+        return;
 
-	wi->view = nil;
-	bfree(wi);
+    windowInfo->view = nil;
+    bfree(windowInfo);
+}
+
+void updateSwapchainFramebuffer(gs_device_t *device, OBSFrameBufferUpdateData updateData)
+{
+    if (!(device && updateData.swapchain)) {
+        return;
+    }
+
+    NSOpenGLContext *platformContext = updateData.platformContext;
+    NSOpenGLContext *swapContext = updateData.swapchainContext;
+
+    CGLContextObj platformContextObj = platformContext.CGLContextObj;
+    CGLLockContext(platformContextObj);
+
+    CGLContextObj swapContextObj = swapContext.CGLContextObj;
+    CGLLockContext(swapContextObj);
+
+    [swapContext makeCurrentContext];
+    [swapContext update];
+
+    gs_texture_t *framebufferTexture = device_texture_create(device, updateData.textureSize.width,
+                                                             updateData.textureSize.height, updateData.textureFormat, 1,
+                                                             NULL, GS_RENDER_TARGET);
+
+    if (!framebufferTexture) {
+        blog(LOG_ERROR, "gl_update (deferred): Unable to generate backing texture for frame buffer.");
+
+        goto updateSwapchainCleanup;
+    }
+
+    BOOL hasBoundFramebuffer = gl_bind_framebuffer(GL_FRAMEBUFFER, updateData.frameBufferObjectId);
+
+    if (!hasBoundFramebuffer) {
+        goto updateSwapchainCleanup;
+    }
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, framebufferTexture->texture, 0);
+    BOOL hasBoundFramebufferTexture = gl_success("glFrameBufferTexture2D");
+
+    if (!hasBoundFramebufferTexture) {
+        GLenum framebufferStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+
+        if (framebufferStatus != GL_FRAMEBUFFER_COMPLETE) {
+            switch (framebufferStatus) {
+                case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
+                    blog(LOG_ERROR, "gl_update (deferred): Framebuffer object attachment is not complete.");
+                    goto updateSwapchainCleanup;
+                case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
+                    blog(LOG_ERROR, "gl_update (deferred): Framebuffer object attachment is missing.");
+                    goto updateSwapchainCleanup;
+                default:
+                    blog(LOG_ERROR, "gl_update (deferred): Framebuffer object is incomplete.");
+                    goto updateSwapchainCleanup;
+            }
+        }
+
+        goto updateSwapchainCleanup;
+    }
+
+    gl_bind_framebuffer(GL_FRAMEBUFFER, 0);
+
+    glFlush();
+
+    gs_swapchain_t *currentSwapchain = updateData.swapchain;
+
+    if (currentSwapchain && currentSwapchain->wi && currentSwapchain->wi->texture) {
+        gs_texture_t *priorFramebufferTexture = currentSwapchain->wi->texture;
+        currentSwapchain->wi->texture = framebufferTexture;
+        gs_texture_destroy(priorFramebufferTexture);
+    }
+
+updateSwapchainCleanup:
+    [NSOpenGLContext clearCurrentContext];
+
+    CGLUnlockContext(swapContextObj);
+    CGLUnlockContext(platformContextObj);
 }
 
 void gl_update(gs_device_t *device)
 {
-	gs_swapchain_t *swap = device->cur_swap;
-	NSOpenGLContext *parent = device->plat->context;
-	NSOpenGLContext *context = swap->wi->context;
-	dispatch_async(dispatch_get_main_queue(), ^() {
-		CGLContextObj parent_obj = [parent CGLContextObj];
-		CGLLockContext(parent_obj);
+    if (!(device && device->cur_swap)) {
+        return;
+    }
 
-		CGLContextObj context_obj = [context CGLContextObj];
-		CGLLockContext(context_obj);
+    gs_swapchain_t *currentSwapchain = device->cur_swap;
 
-		[context makeCurrentContext];
-		[context update];
-		struct gs_init_data *info = &swap->info;
-		gs_texture_t *previous = swap->wi->texture;
-		swap->wi->texture = device_texture_create(device, info->cx,
-							  info->cy,
-							  info->format, 1, NULL,
-							  GS_RENDER_TARGET);
-		gl_bind_framebuffer(GL_FRAMEBUFFER, swap->wi->fbo);
-		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-				       GL_TEXTURE_2D,
-				       swap->wi->texture->texture, 0);
-		gl_success("glFrameBufferTexture2D");
-		gs_texture_destroy(previous);
-		glFlush();
-		[NSOpenGLContext clearCurrentContext];
+    NSOpenGLContext *platformContext = device->plat->context;
+    NSOpenGLContext *swapContext = currentSwapchain->wi->context;
 
-		CGLUnlockContext(context_obj);
+    OBSFrameBufferUpdateData updateData = {.swapchain = currentSwapchain,
+                                           .platformContext = platformContext,
+                                           .swapchainContext = swapContext,
+                                           .frameBufferObjectId = currentSwapchain->wi->fbo,
+                                           .textureFormat = currentSwapchain->info.format,
+                                           .textureSize =
+                                               NSMakeSize(currentSwapchain->info.cx, currentSwapchain->info.cy)};
 
-		CGLUnlockContext(parent_obj);
-	});
+    if (platformContext && swapContext) {
+        [platformContext retain];
+        [swapContext retain];
+
+        dispatch_async(dispatch_get_main_queue(), ^() {
+            updateSwapchainFramebuffer(device, updateData);
+
+            [swapContext release];
+            [platformContext release];
+        });
+    }
 }
 
-void gl_clear_context(gs_device_t *device)
+void gl_clear_context(gs_device_t *device __unused)
 {
-	UNUSED_PARAMETER(device);
-	[NSOpenGLContext clearCurrentContext];
+    [NSOpenGLContext clearCurrentContext];
 }
 
 void device_enter_context(gs_device_t *device)
 {
-	CGLLockContext([device->plat->context CGLContextObj]);
-
-	[device->plat->context makeCurrentContext];
+    NSOpenGLContext *platformContext = device->plat->context;
+    CGLLockContext(platformContext.CGLContextObj);
+    [platformContext makeCurrentContext];
 }
 
 void device_leave_context(gs_device_t *device)
 {
-	glFlush();
-	[NSOpenGLContext clearCurrentContext];
-	device->cur_render_target = NULL;
-	device->cur_zstencil_buffer = NULL;
-	device->cur_swap = NULL;
-	device->cur_fbo = NULL;
+    glFlush();
+    [NSOpenGLContext clearCurrentContext];
+    device->cur_vertex_buffer = NULL;
+    device->cur_index_buffer = NULL;
+    device->cur_render_target = NULL;
+    device->cur_zstencil_buffer = NULL;
+    device->cur_swap = NULL;
+    device->cur_fbo = NULL;
 
-	CGLUnlockContext([device->plat->context CGLContextObj]);
+    NSOpenGLContext *platformContext = device->plat->context;
+    CGLUnlockContext(platformContext.CGLContextObj);
 }
 
 void *device_get_device_obj(gs_device_t *device)
 {
-	return device->plat->context;
+    return device->plat->context;
 }
 
 void device_load_swapchain(gs_device_t *device, gs_swapchain_t *swap)
 {
-	if (device->cur_swap == swap)
-		return;
+    if (device->cur_swap == swap)
+        return;
 
-	device->cur_swap = swap;
-	if (swap) {
-		device_set_render_target(device, swap->wi->texture, NULL);
-	}
+    device->cur_swap = swap;
+    if (swap) {
+        device_set_render_target(device, swap->wi->texture, NULL);
+    }
+}
+
+bool device_is_present_ready(gs_device_t *device __unused)
+{
+    return true;
 }
 
 void device_present(gs_device_t *device)
 {
-	glFlush();
-	[NSOpenGLContext clearCurrentContext];
+    if (!device) {
+        blog(LOG_ERROR, "device_present: Called without valid device reference");
+        return;
+    }
 
-	CGLUnlockContext([device->plat->context CGLContextObj]);
+    if (!(device->cur_swap && device->cur_swap->wi && device->cur_swap->wi->context)) {
+        blog(LOG_ERROR, "device_present: Called without valid window info or NSOpenGLContext");
+        return;
+    }
 
-	CGLLockContext([device->cur_swap->wi->context CGLContextObj]);
+    gs_swapchain_t *currentSwapchain = device->cur_swap;
+    struct gl_windowinfo *info = currentSwapchain->wi;
 
-	[device->cur_swap->wi->context makeCurrentContext];
-	gl_bind_framebuffer(GL_READ_FRAMEBUFFER, device->cur_swap->wi->fbo);
-	gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, 0);
-	const uint32_t width = device->cur_swap->info.cx;
-	const uint32_t height = device->cur_swap->info.cy;
-	glBlitFramebuffer(0, 0, width, height, 0, height, width, 0,
-			  GL_COLOR_BUFFER_BIT, GL_NEAREST);
-	[device->cur_swap->wi->context flushBuffer];
-	glFlush();
-	[NSOpenGLContext clearCurrentContext];
+    glFlush();
 
-	CGLUnlockContext([device->cur_swap->wi->context CGLContextObj]);
+    NSOpenGLContext *currentContext = NSOpenGLContext.currentContext;
+    NSOpenGLContext *swapChainContext = info->context;
+    CGLContextObj swapChainContextObj = [swapChainContext CGLContextObj];
 
-	CGLLockContext([device->plat->context CGLContextObj]);
+    [NSOpenGLContext clearCurrentContext];
+    CGLLockContext(swapChainContextObj);
+    [swapChainContext makeCurrentContext];
 
-	[device->plat->context makeCurrentContext];
+    bool hasBoundReadFramebuffer = gl_bind_framebuffer(GL_READ_FRAMEBUFFER, info->fbo);
+    bool hasBoundDrawFramebuffer = gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    if (!(hasBoundReadFramebuffer && hasBoundDrawFramebuffer)) {
+        goto device_present_cleanup;
+    }
+
+    const UInt32 width = currentSwapchain->info.cx;
+    const UInt32 height = currentSwapchain->info.cy;
+
+    glBlitFramebuffer(0, 0, width, height, 0, height, width, 0, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    bool didBlitFramebuffer = gl_success("glBlitFramebuffer");
+
+    if (!didBlitFramebuffer) {
+        goto device_present_cleanup;
+    }
+
+    [swapChainContext flushBuffer];
+    glFlush();
+
+device_present_cleanup:
+    CGLUnlockContext(swapChainContextObj);
+    [NSOpenGLContext clearCurrentContext];
+    [currentContext makeCurrentContext];
 }
 
-void gl_getclientsize(const struct gs_swap_chain *swap, uint32_t *width,
-		      uint32_t *height)
+bool device_is_monitor_hdr(gs_device_t *device __unused, void *monitor __unused)
 {
-	if (width)
-		*width = swap->info.cx;
-	if (height)
-		*height = swap->info.cy;
+    return false;
 }
 
-gs_texture_t *device_texture_create_from_iosurface(gs_device_t *device,
-						   void *iosurf)
+void gl_getclientsize(const struct gs_swap_chain *swap, uint32_t *width, uint32_t *height)
 {
-	IOSurfaceRef ref = (IOSurfaceRef)iosurf;
-	struct gs_texture_2d *tex = bzalloc(sizeof(struct gs_texture_2d));
+    if (width)
+        *width = swap->info.cx;
+    if (height)
+        *height = swap->info.cy;
+}
 
-	OSType pf = IOSurfaceGetPixelFormat(ref);
-	if (pf != 'BGRA')
-		blog(LOG_ERROR, "Unexpected pixel format: %d (%c%c%c%c)", pf,
-		     pf >> 24, pf >> 16, pf >> 8, pf);
+gs_texture_t *device_texture_create_from_iosurface(gs_device_t *device, void *iosurf)
+{
+    IOSurfaceRef ref = (IOSurfaceRef) iosurf;
+    struct gs_texture_2d *tex = bzalloc(sizeof(struct gs_texture_2d));
 
-	const enum gs_color_format color_format = GS_BGRA;
+    OSType pixelFormat = IOSurfaceGetPixelFormat(ref);
 
-	tex->base.device = device;
-	tex->base.type = GS_TEXTURE_2D;
-	tex->base.format = GS_BGRA;
-	tex->base.levels = 1;
-	tex->base.gl_format = convert_gs_format(color_format);
-	tex->base.gl_internal_format = convert_gs_internal_format(color_format);
-	tex->base.gl_type = GL_UNSIGNED_INT_8_8_8_8_REV;
-	tex->base.gl_target = GL_TEXTURE_RECTANGLE;
-	tex->base.is_dynamic = false;
-	tex->base.is_render_target = false;
-	tex->base.gen_mipmaps = false;
-	tex->width = IOSurfaceGetWidth(ref);
-	tex->height = IOSurfaceGetHeight(ref);
+    GLenum color_format = 0;
+    GLenum internal_format = 0;
+    GLenum texture_type = 0;
 
-	if (!gl_gen_textures(1, &tex->base.texture))
-		goto fail;
+    switch (pixelFormat) {
+        case kCVPixelFormatType_ARGB2101010LEPacked: {
+            color_format = GL_BGRA;
+            internal_format = convert_gs_internal_format(GS_R10G10B10A2);
+            texture_type = GL_UNSIGNED_INT_2_10_10_10_REV;
 
-	if (!gl_bind_texture(tex->base.gl_target, tex->base.texture))
-		goto fail;
+            break;
+        }
+            /* Versions of Syphon before 2dc6d31 provide IOSurfaces with pixel format 0.
+             * A pixel format of 0 means they are invalid, but in practice the IOSurfaces provided by Syphon are always
+             * 32BGRA. Historically, OBS had a bug that accidentally treated any invalid surface as 32BGRA, so those
+             * invalid surfaces were never noticed. To keep Syphon working, we need to keep this (wrong) behavior.
+             * This is suboptimal as IOSurfaces that are actually invalid (possibly coming from somewhere else) also
+             * get treated as valid 32BGRA, but it is how it is. */
+        case 0:
+        case kCVPixelFormatType_32BGRA: {
+            color_format = convert_gs_format(GS_BGRA);
+            internal_format = convert_gs_internal_format(GS_BGRA);
+            texture_type = GL_UNSIGNED_INT_8_8_8_8_REV;
+            break;
+        }
+        default:
+            blog(LOG_ERROR, "Unexpected pixel format: %d (%c%c%c%c)", pixelFormat, pixelFormat >> 24, pixelFormat >> 16,
+                 pixelFormat >> 8, pixelFormat);
+            goto fail;
+    }
 
-	CGLError err = CGLTexImageIOSurface2D(
-		[[NSOpenGLContext currentContext] CGLContextObj],
-		tex->base.gl_target, tex->base.gl_internal_format, tex->width,
-		tex->height, tex->base.gl_format, tex->base.gl_type, ref, 0);
+    tex->base.device = device;
+    tex->base.type = GS_TEXTURE_2D;
+    tex->base.format = color_format;
+    tex->base.levels = 1;
+    tex->base.gl_format = color_format;
+    tex->base.gl_internal_format = internal_format;
+    tex->base.gl_type = texture_type;
+    tex->base.gl_target = GL_TEXTURE_RECTANGLE_ARB;
+    tex->base.is_dynamic = false;
+    tex->base.is_render_target = false;
+    tex->base.gen_mipmaps = false;
+    tex->width = (uint32_t) IOSurfaceGetWidth(ref);
+    tex->height = (uint32_t) IOSurfaceGetHeight(ref);
 
-	if (err != kCGLNoError) {
-		blog(LOG_ERROR,
-		     "CGLTexImageIOSurface2D: %u, %s"
-		     " (device_texture_create_from_iosurface)",
-		     err, CGLErrorString(err));
+    if (!gl_gen_textures(1, &tex->base.texture))
+        goto fail;
 
-		gl_success("CGLTexImageIOSurface2D");
-		goto fail;
-	}
+    if (!gl_bind_texture(tex->base.gl_target, tex->base.texture))
+        goto fail;
 
-	if (!gl_tex_param_i(tex->base.gl_target, GL_TEXTURE_MAX_LEVEL, 0))
-		goto fail;
+    CGLError err = CGLTexImageIOSurface2D([[NSOpenGLContext currentContext] CGLContextObj], tex->base.gl_target,
+                                          tex->base.gl_internal_format, tex->width, tex->height, tex->base.gl_format,
+                                          tex->base.gl_type, ref, 0);
 
-	if (!gl_bind_texture(tex->base.gl_target, 0))
-		goto fail;
+    if (err != kCGLNoError) {
+        blog(LOG_ERROR,
+             "CGLTexImageIOSurface2D: %u, %s"
+             " (device_texture_create_from_iosurface)",
+             err, CGLErrorString(err));
 
-	return (gs_texture_t *)tex;
+        gl_success("CGLTexImageIOSurface2D");
+        goto fail;
+    }
+
+    if (!gl_tex_param_i(tex->base.gl_target, GL_TEXTURE_MAX_LEVEL, 0))
+        goto fail;
+
+    if (!gl_bind_texture(tex->base.gl_target, 0))
+        goto fail;
+
+    return (gs_texture_t *) tex;
 
 fail:
-	gs_texture_destroy((gs_texture_t *)tex);
-	blog(LOG_ERROR, "device_texture_create_from_iosurface (GL) failed");
-	return NULL;
+    gs_texture_destroy((gs_texture_t *) tex);
+    blog(LOG_ERROR, "device_texture_create_from_iosurface (GL) failed");
+    return NULL;
+}
+
+gs_texture_t *device_texture_open_shared(gs_device_t *device, uint32_t handle)
+{
+    gs_texture_t *texture = NULL;
+    IOSurfaceRef ref = IOSurfaceLookupFromMachPort((mach_port_t) handle);
+    texture = device_texture_create_from_iosurface(device, ref);
+    CFRelease(ref);
+    return texture;
+}
+
+bool device_shared_texture_available(void)
+{
+    return true;
 }
 
 bool gs_texture_rebind_iosurface(gs_texture_t *texture, void *iosurf)
 {
-	if (!texture)
-		return false;
+    if (!texture)
+        return false;
 
-	if (!iosurf)
-		return false;
+    if (!iosurf)
+        return false;
 
-	struct gs_texture_2d *tex = (struct gs_texture_2d *)texture;
-	IOSurfaceRef ref = (IOSurfaceRef)iosurf;
+    struct gs_texture_2d *tex = (struct gs_texture_2d *) texture;
+    IOSurfaceRef ref = (IOSurfaceRef) iosurf;
 
-	OSType pf = IOSurfaceGetPixelFormat(ref);
-	if (pf != 'BGRA')
-		blog(LOG_ERROR, "Unexpected pixel format: %d (%c%c%c%c)", pf,
-		     pf >> 24, pf >> 16, pf >> 8, pf);
+    OSType pixelFormat = IOSurfaceGetPixelFormat(ref);
 
-	if (tex->width != IOSurfaceGetWidth(ref) ||
-	    tex->height != IOSurfaceGetHeight(ref))
-		return false;
+    switch (pixelFormat) {
+        case kCVPixelFormatType_ARGB2101010LEPacked:
+        case kCVPixelFormatType_32BGRA:
+            break;
+        case 0:
+            blog(LOG_ERROR, "Invalid IOSurface Buffer");
+            return false;
+        default:
+            blog(LOG_ERROR, "Unexpected pixel format: %d (%c%c%c%c)", pixelFormat, pixelFormat >> 24, pixelFormat >> 16,
+                 pixelFormat >> 8, pixelFormat);
+            return false;
+    }
 
-	if (!gl_bind_texture(tex->base.gl_target, tex->base.texture))
-		return false;
+    tex->width = (uint32_t) IOSurfaceGetWidth(ref);
+    tex->height = (uint32_t) IOSurfaceGetHeight(ref);
 
-	CGLError err = CGLTexImageIOSurface2D(
-		[[NSOpenGLContext currentContext] CGLContextObj],
-		tex->base.gl_target, tex->base.gl_internal_format, tex->width,
-		tex->height, tex->base.gl_format, tex->base.gl_type, ref, 0);
+    if (!gl_bind_texture(tex->base.gl_target, tex->base.texture))
+        return false;
 
-	if (err != kCGLNoError) {
-		blog(LOG_ERROR,
-		     "CGLTexImageIOSurface2D: %u, %s"
-		     " (gs_texture_rebind_iosurface)",
-		     err, CGLErrorString(err));
+    CGLError err = CGLTexImageIOSurface2D([[NSOpenGLContext currentContext] CGLContextObj], tex->base.gl_target,
+                                          tex->base.gl_internal_format, tex->width, tex->height, tex->base.gl_format,
+                                          tex->base.gl_type, ref, 0);
 
-		gl_success("CGLTexImageIOSurface2D");
-		return false;
-	}
+    if (err != kCGLNoError) {
+        blog(LOG_ERROR,
+             "CGLTexImageIOSurface2D: %u, %s"
+             " (gs_texture_rebind_iosurface)",
+             err, CGLErrorString(err));
 
-	if (!gl_bind_texture(tex->base.gl_target, 0))
-		return false;
+        gl_success("CGLTexImageIOSurface2D");
+        return false;
+    }
 
-	return true;
+    if (!gl_bind_texture(tex->base.gl_target, 0))
+        return false;
+
+    return true;
 }

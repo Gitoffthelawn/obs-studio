@@ -78,7 +78,7 @@ it's no longer needed.
 
 *(Important note: do not use more than one display widget within the
 hierarchy of the same base window; this will cause presentation stalls
-on Macs.)*
+on macOS.)*
 
 For an example of how displays are used with Qt, see
 `UI/qt-display.hpp`_ and `UI/qt-display.cpp`_.
@@ -189,8 +189,8 @@ use a bounding box, you call the
 :c:func:`obs_sceneitem_set_bounds()`, and
 :c:func:`obs_sceneitem_set_bounds_alignment()`.  Though the easiest way
 to handle everything related to transforms is to use the
-:c:func:`obs_sceneitem_set_info()` and
-:c:func:`obs_sceneitem_get_info()` functions.  See
+:c:func:`obs_sceneitem_set_info2()` and
+:c:func:`obs_sceneitem_get_info2()` functions.  See
 :ref:`scene_item_reference` for all the functions related to scene
 items.
 
@@ -247,6 +247,6 @@ translated error message stored that can be obtained via the
 
 .. --------------------------------------------------------------------
 
-.. _RTMP Output: https://github.com/jp9000/obs-studio/blob/master/plugins/obs-outputs/rtmp-stream.c
-.. _UI/qt-display.hpp: https://github.com/jp9000/obs-studio/blob/master/UI/qt-display.hpp
-.. _UI/qt-display.cpp: https://github.com/jp9000/obs-studio/blob/master/UI/qt-display.cpp
+.. _RTMP Output: https://github.com/obsproject/obs-studio/blob/master/plugins/obs-outputs/rtmp-stream.c
+.. _UI/qt-display.hpp: https://github.com/obsproject/obs-studio/blob/master/UI/qt-display.hpp
+.. _UI/qt-display.cpp: https://github.com/obsproject/obs-studio/blob/master/UI/qt-display.cpp

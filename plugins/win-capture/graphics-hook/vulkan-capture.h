@@ -7,8 +7,10 @@ struct vk_inst_funcs {
 	DEF_FUNC(DestroyInstance);
 	DEF_FUNC(CreateWin32SurfaceKHR);
 	DEF_FUNC(DestroySurfaceKHR);
+	DEF_FUNC(GetPhysicalDeviceQueueFamilyProperties);
 	DEF_FUNC(GetPhysicalDeviceMemoryProperties);
 	DEF_FUNC(GetPhysicalDeviceImageFormatProperties2);
+	DEF_FUNC(EnumerateDeviceExtensionProperties);
 };
 
 struct vk_device_funcs {
@@ -26,6 +28,7 @@ struct vk_device_funcs {
 	DEF_FUNC(DestroyImage);
 	DEF_FUNC(GetImageMemoryRequirements);
 	DEF_FUNC(GetImageMemoryRequirements2);
+	DEF_FUNC(ResetCommandPool);
 	DEF_FUNC(BeginCommandBuffer);
 	DEF_FUNC(EndCommandBuffer);
 	DEF_FUNC(CmdCopyImage);
@@ -39,6 +42,13 @@ struct vk_device_funcs {
 	DEF_FUNC(DestroyFence);
 	DEF_FUNC(WaitForFences);
 	DEF_FUNC(ResetFences);
+	DEF_FUNC(CreateImageView);
+	DEF_FUNC(DestroyImageView);
+	DEF_FUNC(CreateFramebuffer);
+	DEF_FUNC(DestroyFramebuffer);
+	DEF_FUNC(CmdBeginRenderPass);
+	DEF_FUNC(CmdBeginRenderPass2KHR);
+	DEF_FUNC(CmdBeginRenderPass2);
 };
 
 #undef DEF_FUNC
@@ -302,8 +312,11 @@ const char *result_to_str(VkResult result)
 		VAL(VK_ERROR_TOO_MANY_OBJECTS);
 		VAL(VK_ERROR_FORMAT_NOT_SUPPORTED);
 		VAL(VK_ERROR_FRAGMENTED_POOL);
+		VAL(VK_ERROR_UNKNOWN);
 		VAL(VK_ERROR_OUT_OF_POOL_MEMORY);
 		VAL(VK_ERROR_INVALID_EXTERNAL_HANDLE);
+		VAL(VK_ERROR_FRAGMENTATION);
+		VAL(VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS);
 		VAL(VK_ERROR_SURFACE_LOST_KHR);
 		VAL(VK_ERROR_NATIVE_WINDOW_IN_USE_KHR);
 		VAL(VK_SUBOPTIMAL_KHR);
@@ -312,16 +325,8 @@ const char *result_to_str(VkResult result)
 		VAL(VK_ERROR_VALIDATION_FAILED_EXT);
 		VAL(VK_ERROR_INVALID_SHADER_NV);
 		VAL(VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
-		VAL(VK_ERROR_FRAGMENTATION_EXT);
 		VAL(VK_ERROR_NOT_PERMITTED_EXT);
-		VAL(VK_ERROR_INVALID_DEVICE_ADDRESS_EXT);
 		VAL(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT);
-		//VAL(VK_ERROR_OUT_OF_POOL_MEMORY_KHR);
-		//VAL(VK_ERROR_INVALID_EXTERNAL_HANDLE_KHR);
-		//VAL(VK_RESULT_BEGIN_RANGE);
-		//VAL(VK_RESULT_END_RANGE);
-		VAL(VK_RESULT_RANGE_SIZE);
-		VAL(VK_RESULT_MAX_ENUM);
 #undef VAL
 
 	default:
@@ -473,7 +478,6 @@ DXGI_FORMAT vk_format_to_dxgi(VkFormat format)
 	case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
 		break;
 	case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-		dxgi_format = DXGI_FORMAT_R10G10B10A2_UNORM;
 		break;
 	case VK_FORMAT_A2R10G10B10_SNORM_PACK32:
 		break;
@@ -841,11 +845,6 @@ DXGI_FORMAT vk_format_to_dxgi(VkFormat format)
 	case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG:
 		break;
 	}
-	if (dxgi_format == DXGI_FORMAT_UNKNOWN) {
-		flog("unknown swapchain format, "
-		     "defaulting to B8G8R8A8_UNORM");
-		dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-	}
 	return dxgi_format;
 }
 
@@ -855,12 +854,11 @@ DXGI_FORMAT vk_format_to_dxgi(VkFormat format)
 
 #ifdef DEBUG_PRINT
 #include <stdio.h>
-#define debug(format, ...)                                        \
-	do {                                                      \
-		char str[256];                                    \
-		snprintf(str, sizeof(str) - 1, "%s " format "\n", \
-			 "[OBS graphics-hook]", ##__VA_ARGS__);   \
-		OutputDebugStringA(str);                          \
+#define debug(format, ...)                                                                               \
+	do {                                                                                             \
+		char str[256];                                                                           \
+		snprintf(str, sizeof(str) - 1, "%s " format "\n", "[OBS graphics-hook]", ##__VA_ARGS__); \
+		OutputDebugStringA(str);                                                                 \
 	} while (false)
 
 #define debug_res(x, y) debug("%s result: %s", x, result_to_str(y))
