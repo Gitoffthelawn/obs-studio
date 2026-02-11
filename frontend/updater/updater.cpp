@@ -14,21 +14,22 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "updater.hpp"
 #include "manifest.hpp"
+#include "updater.hpp"
 
 #include <psapi.h>
-#include <WinTrust.h>
 #include <SoftPub.h>
+#include <WinTrust.h>
 
 #include <util/windows/CoTaskMemPtr.hpp>
 
+#include <exception>
 #include <future>
+#include <mutex>
+#include <queue>
 #include <string>
 #include <string_view>
-#include <mutex>
 #include <unordered_set>
-#include <queue>
 
 using namespace std;
 using namespace updater;
@@ -53,11 +54,12 @@ HCRYPTPROV hProvider = 0;
 static bool bExiting = false;
 static bool updateFailed = false;
 
-static bool downloadThreadFailure = false;
+static atomic<bool> downloadThreadFailure = false;
 
 size_t totalFileSize = 0;
-size_t completedFileSize = 0;
-static int completedUpdates = 0;
+atomic<size_t> completedFileSize = 0;
+atomic<int> lastPosition;
+static atomic<int> completedUpdates = 0;
 
 static wchar_t tempPath[MAX_PATH];
 static wchar_t obs_base_directory[MAX_PATH];
@@ -215,14 +217,14 @@ static string QuickReadFile(const wchar_t *path)
 
 static bool QuickWriteFile(const wchar_t *file, const void *data, size_t size)
 try {
-	WinHandle handle = CreateFile(file, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, nullptr);
+	WinHandle handle = CreateFile(file, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
 
 	if (handle == INVALID_HANDLE_VALUE)
-		throw GetLastError();
+		throw LastError();
 
 	DWORD written;
 	if (!WriteFile(handle, data, (DWORD)size, &written, nullptr))
-		throw GetLastError();
+		throw LastError();
 
 	return true;
 
@@ -380,7 +382,7 @@ bool DownloadWorkerThread()
 	HttpHandle hConnect = WinHttpConnect(hSession, kCDNHostname, INTERNET_DEFAULT_HTTPS_PORT, 0);
 	if (!hConnect) {
 		downloadThreadFailure = true;
-		Status(L"Update failed: Couldn't connect to %S", kCDNHostname);
+		Status(L"Update failed: Couldn't connect to %s", kCDNHostname);
 		return false;
 	}
 
@@ -412,7 +414,7 @@ bool DownloadWorkerThread()
 				return false;
 			}
 
-			auto &buf = download_data[update.downloadHash];
+			auto &buf = download_data.at(update.downloadHash);
 			/* Reserve required memory */
 			buf.reserve(update.fileSize);
 
@@ -422,7 +424,7 @@ bool DownloadWorkerThread()
 				Status(L"Update failed: Could not download "
 				       L"%s (error code %d)",
 				       update.outputPath.c_str(), responseCode);
-				return true;
+				return false;
 			}
 
 			if (responseCode != 200) {
@@ -430,7 +432,7 @@ bool DownloadWorkerThread()
 				Status(L"Update failed: Could not download "
 				       L"%s (error code %d)",
 				       update.outputPath.c_str(), responseCode);
-				return true;
+				return false;
 			}
 
 			/* Validate hash of downloaded data. */
@@ -442,7 +444,7 @@ bool DownloadWorkerThread()
 				Status(L"Update failed: Integrity check "
 				       L"failed on %s",
 				       update.outputPath.c_str());
-				return true;
+				return false;
 			}
 
 			/* Decompress data in compressed buffer. */
@@ -453,7 +455,7 @@ bool DownloadWorkerThread()
 					Status(L"Update failed: Decompression "
 					       L"failed on %s (error code %d)",
 					       update.outputPath.c_str(), res);
-					return true;
+					return false;
 				}
 			}
 
@@ -490,7 +492,11 @@ try {
 
 	return true;
 
+} catch (const exception &e) {
+	Status(L"Exception: %S", e.what());
+	return false;
 } catch (...) {
+	Status(L"Unknown exception occurred in RunDownloadWorkers");
 	return false;
 }
 
@@ -633,7 +639,11 @@ try {
 	for (auto &result : futures) {
 		result.wait();
 	}
+
+} catch (const exception &e) {
+	Status(L"Exception: %S", e.what());
 } catch (...) {
+	Status(L"Unknown exception occurred in RunHasherWorkers");
 }
 
 /* ----------------------------------------------------------------------- */
@@ -1017,9 +1027,9 @@ static bool UpdateFile(ZSTD_DCtx *ctx, update_t &file)
 }
 
 queue<reference_wrapper<update_t>> updateQueue;
-static int lastPosition = 0;
-static int installed = 0;
-static bool updateThreadFailed = false;
+
+static atomic<int> installed = 0;
+static atomic<bool> updateThreadFailed = false;
 
 static bool UpdateWorker()
 {
@@ -1043,8 +1053,10 @@ static bool UpdateWorker()
 			return false;
 		} else {
 			int position = (int)(((float)++installed / (float)completedUpdates) * 100.0f);
-			if (position > lastPosition) {
-				lastPosition = position;
+			int oldPosition = lastPosition;
+
+			if (position > oldPosition &&
+			    lastPosition.compare_exchange_strong(oldPosition, position, memory_order_relaxed)) {
 				SendDlgItemMessage(hwndMain, IDC_PROGRESS, PBM_SETPOS, position, 0);
 			}
 		}
@@ -1072,7 +1084,11 @@ try {
 
 	return true;
 
+} catch (const exception &e) {
+	Status(L"Exception: %S", e.what());
+	return false;
 } catch (...) {
+	Status(L"Unknown exception occurred in RunUpdateWorkers");
 	return false;
 }
 
@@ -1521,6 +1537,15 @@ static bool Update(wchar_t *cmdLine)
 	/* ------------------------------------- *
 	 * Download Updates                      */
 
+	/* Pre-allocate download_data map so worker threads only
+	 * look up existing entries rather than inserting new ones,
+	 * avoiding concurrent map mutation from multiple threads. */
+	download_data.reserve(downloadHashes.size());
+	for (update_t &update : updates) {
+		if (update.state == STATE_PENDING_DOWNLOAD)
+			download_data.try_emplace(update.downloadHash);
+	}
+
 	Status(L"Downloading updates...");
 	if (!RunDownloadWorkers(4))
 		return false;
@@ -1534,6 +1559,7 @@ static bool Update(wchar_t *cmdLine)
 	 * Install updates                       */
 
 	SendDlgItemMessage(hwndMain, IDC_PROGRESS, PBM_SETPOS, 0, 0);
+	lastPosition = 0;
 
 	Status(L"Installing updates...");
 	if (!RunUpdateWorkers(4))
