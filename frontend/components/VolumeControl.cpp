@@ -67,7 +67,7 @@ VolumeControl::VolumeControl(obs_source_t *source, QWidget *parent, bool vertica
 	utils->addClass(categoryLabel, "text-tiny");
 
 	nameButton = new VolumeName(source, this);
-	nameButton->setMaximumWidth(140);
+	nameButton->setMaximumWidth(280);
 	utils->addClass(nameButton, "text-small");
 	utils->addClass(nameButton, "mixer-name");
 
@@ -333,7 +333,7 @@ void VolumeControl::setLayoutVertical(bool vertical)
 		slider->setLayoutDirection(Qt::LeftToRight);
 		slider->setDisplayTicks(true);
 
-		nameButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Preferred);
+		nameButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 		categoryLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
 		volumeLabel->setAlignment(Qt::AlignRight);
 
@@ -393,7 +393,7 @@ void VolumeControl::showVolumeControlMenu(QPoint pos)
 		return;
 	}
 
-	QMenu *popup = new QMenu(this);
+	QMenu *popup = new QMenu(window());
 
 	// Create menu QActions
 	QAction *lockAction = new QAction(QTStr("LockVolume"), popup);
