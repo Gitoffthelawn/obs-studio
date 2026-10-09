@@ -558,7 +558,8 @@ void OBSBasic::on_actionImportProfile_triggered()
 	const QString sourceDirectory = SelectDirectory(this, QTStr("Basic.MainMenu.Profile.Import"), home);
 
 	if (!sourceDirectory.isEmpty() && !sourceDirectory.isNull()) {
-		const std::filesystem::path sourcePath = std::filesystem::u8path(sourceDirectory.toStdString());
+		const std::filesystem::path sourcePath =
+			std::filesystem::u8path(QDir::cleanPath(sourceDirectory).toStdString());
 		const std::string directoryName = sourcePath.filename().u8string();
 
 		if (auto profile = GetProfileByDirectoryName(directoryName)) {
@@ -1118,5 +1119,5 @@ void OBSBasic::CheckForMissingEncoders()
 	// Format and show error message
 	const QString encoderMissingMessage =
 		QTStr("EncoderMissing.Text").arg(encoderList.join("\n")).arg(kbURL.arg(crumb));
-	OBSMessageBox::warning(this, QTStr("EncoderMissing.Title"), encoderMissingMessage, true);
+	OBSMessageBox::warning(nullptr, QTStr("EncoderMissing.Title"), encoderMissingMessage, true);
 }
