@@ -286,6 +286,8 @@ static void obs_source_init_finalize(struct obs_source *source, obs_canvas_t *ca
 			obs_context_data_insert_name(&source->context, &obs->data.sources_mutex,
 						     &obs->data.public_sources);
 		}
+	} else if (requires_canvas(source)) {
+		source->canvas = obs_canvas_get_weak_canvas(canvas);
 	}
 	obs_context_data_insert_uuid(&source->context, &obs->data.sources_mutex, &obs->data.sources);
 }
@@ -568,6 +570,12 @@ obs_source_t *obs_source_create_canvas(obs_canvas_t *canvas, const char *id, con
 				       obs_data_t *hotkey_data)
 {
 	return obs_source_create_internal(id, name, NULL, settings, hotkey_data, false, LIBOBS_API_VER, canvas);
+}
+
+obs_source_t *obs_source_create_private_with_canvas(obs_canvas_t *canvas, const char *id, const char *name,
+						    obs_data_t *settings)
+{
+	return obs_source_create_internal(id, name, NULL, settings, NULL, true, LIBOBS_API_VER, canvas);
 }
 
 obs_source_t *obs_source_create_set_last_ver(obs_canvas_t *canvas, const char *id, const char *name, const char *uuid,
@@ -2462,6 +2470,8 @@ static bool update_async_texrender(struct obs_source *source, const struct obs_s
 			gs_effect_set_val(max_param, frame->color_range_max, sizeof(float) * 3);
 		}
 
+		gs_load_vertexbuffer(NULL);
+		gs_load_indexbuffer(NULL);
 		gs_draw(GS_TRIS, 0, 3);
 
 		gs_technique_end_pass(tech);
